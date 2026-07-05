@@ -180,7 +180,10 @@ def build_rdp_args(profile: dict) -> list[str]:
         "/smart-sizing",
         "/sound",                 # 音声リダイレクト(サーバー側は pipewire-module-xrdp 導入済み)
         "/network:lan",
-        "+rfx",                   # RemoteFX を要求(xrdp 0.9 系で最速)
+        # GFX パイプライン。xrdp 0.10 は AVC444 明示で H.264 になる(無指定の /gfx だと
+        # RFX progressive 止まり。サーバーログ「Matched H264 mode」で確認済み)
+        "/gfx:AVC444",
+        "+rfx",                   # GFX 非対応の xrdp 0.9 系向けフォールバック(0.9 では実質最速)
         "-nsc",                   # NSC は ARM Mac ビルドで未最適化のため使わせない
         "+auto-reconnect",
         f"/auto-reconnect-max-retries:{RETRY_MAX}",

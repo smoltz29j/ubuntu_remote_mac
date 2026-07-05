@@ -55,13 +55,14 @@ RDP サーバーが 2 つ動いている。**繋ぐべきは 3390 の xrdp**(Ubu
   リモートに全部送られ Ctrl+Alt+Enter も効かず、ユーザーが脱出不能になる。
   また `/smart-sizing` と `+dynamic-resolution` は同時指定不可(パース時エラーで即終了)。
   xrdp 0.9 系は Display Control 非対応なので dynamic-resolution はどのみち無意味。
-- **コーデックは `+rfx -nsc` で RemoteFX に固定する**。既定で選ばれる NSCodec は
-  ARM Mac の brew ビルドでは NEON 未実装(ログに `TODO: Implement neon optimized version`)で
-  描画が著しく遅い。この設定は GFX 非対応の xrdp 0.9 系で RemoteFX を引き出すためのもの。
-  サーバーは 2026-07-05 に GFX/H.264 対応の 0.10.6 へ移行済みで、Windows 版は変更なしで
-  H.264 到達を実機確認済みだが、**sdl-freerdp が GFX をネゴシエートするかは未検証**
-  (brew ビルドの H.264 対応有無も含めて要実機確認)。初期ウィンドウは `/size:90%` で指定
-  (既定だと 1024x768 で開いて小さすぎる)。
+- **コーデックは `/gfx:AVC444 +rfx -nsc`**。sdl-freerdp は `/gfx` を明示しないと rdpgfx
+  チャネル自体を載せず、xrdp 0.10 相手でもレガシー RemoteFX になる。さらに無指定の
+  `/gfx` では RFX progressive 止まりで、**AVC444 明示で初めて H.264 になる**
+  (`/var/log/xrdp.log` の `Matched H264 mode` → `starting h264 codec session gfx` で
+  実機確認済み。brew ビルドは `WITH_GFX_H264=ON`/FFmpeg)。`+rfx` は GFX 非対応の
+  xrdp 0.9 系向けフォールバック。NSCodec は ARM Mac の brew ビルドでは NEON 未実装
+  (ログに `TODO: Implement neon optimized version`)で描画が著しく遅いため `-nsc`。
+  初期ウィンドウは `/size:90%` で指定(既定だと 1024x768 で開いて小さすぎる)。
 - **Python は Tk 8.6 以上を持つものを使う**(`run.sh` の `pick_python` が brew python を優先)。
   システム Python (`/usr/bin/python3`, 3.9) は Tk **8.5** で、最近の macOS では
   **ウィンドウが真っ黒に描画される**ため使えない。brew python は素では `_tkinter` を欠くので
