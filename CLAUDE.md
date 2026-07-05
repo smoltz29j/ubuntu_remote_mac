@@ -36,7 +36,10 @@ RDP サーバーが 2 つ動いている。**繋ぐべきは 3390 の xrdp**(Ubu
 - **3389 = GNOME リモートログイン**(gnome-remote-desktop システムサービス)。NLA 必須
   (`HYBRID_REQUIRED_BY_SERVER`)で、認証情報も Ubuntu ログインとは別の専用のもの。
   誤ってこちらに繋ぐと NLA 認証で `SPNEGO failed 0xc00700ea` になる。
-- **3390 = xrdp**(`/etc/xrdp/xrdp.ini` で `port=3390` に変更されている)。TLS のみ・NLA なし。
+- **3390 = xrdp 0.10.6(ソースビルド、GFX/H.264 対応)**。2026-07-05 に apt の 0.9.24 から
+  移行済み。稼働中の設定は `/usr/local/etc/xrdp/xrdp.ini`(`port=3390`、
+  `security_layer=negotiate`)と `/usr/local/etc/xrdp/gfx.toml`。`/etc/xrdp/xrdp.ini` は
+  旧 apt 版の残骸なので見ない。詳細は Windows 版 CLAUDE.md の同セクション参照。
 - SSH (22) も開いており鍵認証で入れる(`ssh smoltz@192.168.101.201`)。サーバー側調査はこれで。
 
 ## 環境の落とし穴(実機で確認済み)
@@ -54,8 +57,10 @@ RDP サーバーが 2 つ動いている。**繋ぐべきは 3390 の xrdp**(Ubu
   xrdp 0.9 系は Display Control 非対応なので dynamic-resolution はどのみち無意味。
 - **コーデックは `+rfx -nsc` で RemoteFX に固定する**。既定で選ばれる NSCodec は
   ARM Mac の brew ビルドでは NEON 未実装(ログに `TODO: Implement neon optimized version`)で
-  描画が著しく遅い。サーバーの xrdp 0.9.24(Ubuntu 24.04)は GFX パイプライン(`/gfx`)非対応
-  なので、0.9 系では RemoteFX が実質最速。初期ウィンドウは `/size:90%` で指定
+  描画が著しく遅い。この設定は GFX 非対応の xrdp 0.9 系で RemoteFX を引き出すためのもの。
+  サーバーは 2026-07-05 に GFX/H.264 対応の 0.10.6 へ移行済みで、Windows 版は変更なしで
+  H.264 到達を実機確認済みだが、**sdl-freerdp が GFX をネゴシエートするかは未検証**
+  (brew ビルドの H.264 対応有無も含めて要実機確認)。初期ウィンドウは `/size:90%` で指定
   (既定だと 1024x768 で開いて小さすぎる)。
 - **Python は Tk 8.6 以上を持つものを使う**(`run.sh` の `pick_python` が brew python を優先)。
   システム Python (`/usr/bin/python3`, 3.9) は Tk **8.5** で、最近の macOS では
@@ -77,6 +82,7 @@ RDP サーバーが 2 つ動いている。**繋ぐべきは 3390 の xrdp**(Ubu
 | サーバー証明書検証なし(xrdp は自己署名) | `/cert:ignore` |
 | NLA 既定オフ(Ubuntu xrdp は通常非対応)、プロファイル毎に選択可 | **既定は自動交渉(`/sec:` を渡さない)**。「NLA を強制する」チェックで `/sec:nla` |
 | ユーザー名/パスワードを接続時に渡し xrdp ログイン画面を自動突破 | **`/args-from:stdin` で全引数(`/p:` 含む)を stdin から渡す**(1行=1引数、ps に平文を出さない)。`/from-stdin` は SDL クライアントでは GUI ダイアログになりパイプから受け取れないので使わない。パスワード未登録時は SDL の認証ダイアログに任せる |
-| 自動再接続(非ユーザー起因の切断を最大5回リトライ) | FreeRDP の `+auto-reconnect` + ランチャー側 `Session` が exit code != 0 のとき再起動(exit 0 = ユーザーが閉じた、はリトライしない) |
+| 自動再接続(非ユーザー起因の切断を最大5回リトライ) | FreeRDP の `+auto-reconnect` + ランチャー側 `Session` が非ユーザー起因の終了時のみ再起動。ユーザー起因 exit code {0,1,2,11,145} はリトライしない。**ウィンドウを閉じたときの exit はネットワーク断と同じ 131 (CONN_FAILED)** なので、app.log のこの接続分の出力に `Connection aborted by user` があるかで判別する |
 | リサイズで解像度追従(SmartReconnect) | `+dynamic-resolution` |
+| 全画面表示(F11 + mstsc 風の上端接続バー) | 「全画面」ボタン / F11 で AppleScript により AXFullScreen を反転(`+f` は脱出不能のため使わない)。ネイティブ全画面なのでマウスを上端に寄せればメニューバーから解除でき、これが接続バー相当の脱出手段 |
 | ログ `%APPDATA%\UbuntuRemote\app.log` | `~/Library/Application Support/UbuntuRemote/app.log`(sdl-freerdp の stdout/stderr もここへ) |
