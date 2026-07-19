@@ -63,6 +63,10 @@ Ubuntu 24.04 / x86_64 / GPU は **AMD Radeon RX 6600**(NVIDIA ではないので
 
 ## Ubuntu 側 xrdp をソースビルドするときの必須手当て
 
+**手順そのものは README.md「接続先 Ubuntu のセットアップ手順」に順序立てて書いてある**
+(コマンド列・トラブルシュート早見表つき)。新しいマシンを追加するときはそちらを見ること。
+以下は「なぜそうするのか」「どのログがどの原因に対応するか」という診断側の情報。
+
 apt 版なら自動でやってくれるがソースビルドでは自分で行う必要があるもの。glavine で全部踏んだ。
 
 - **`/etc/X11/Xwrapper.config`** を `allowed_users=anybody` / `needs_root_rights=yes` にする。
