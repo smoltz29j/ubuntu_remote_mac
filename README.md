@@ -59,9 +59,16 @@ python3 -m py_compile ubuntu_remote.py      # 構文チェック(テストは置
 **2 台(elwhite / glavine)で同じ落とし穴を順番に踏んだので、その全部を手順として残す。**
 Ubuntu 24.04 + GNOME で xrdp をソースビルドする前提。apt 版(0.9.x)を使うなら GFX/H.264 が
 無い代わりに、下記のうち Xwrapper と PAM はパッケージが面倒を見てくれる。
-なお xorgxrdp は X11 セッション前提。GNOME は X11 サポートを廃止する方向のため、
-**将来の Ubuntu(26.04 世代以降?)ではこの構成自体が成立しなくなる可能性がある** —
-その時はこの手順の修正ではなく方式の再検討(gnome-remote-desktop 等)になる。
+なお xorgxrdp は X11 セッション前提で、**GNOME の X11 セッションは GNOME 49
+(= Ubuntu 25.10)で削除済み**。25.10 以降の GNOME ではこの手順は成立しない。対処:
+
+1. **gnome-remote-desktop の Remote Login へ移行**(第一候補)— GNOME 47+ はヘッドレスの
+   マルチユーザーセッション対応なので「リモート専用アカウント」方式もそのまま実現できる。
+   RDP のままなのでこのアプリは変更不要(プロファイルで NLA を有効化、資格情報は
+   `grdctl --system` の専用のもの)。H.264 は NVIDIA では確実、AMD の VA-API は要検証
+2. **xrdp + X11 が残る別デスクトップ(XFCE 等)** — 消えたのは GNOME のセッションで
+   Xorg 自体ではない。`startwm.sh` で `xfce4-session` を起動すれば動くが GNOME は捨てる
+3. **24.04 LTS に留める** — 2029-04 までサポート。この手順はそれまで有効
 
 ### 0. どの RDP サーバーに繋ぐか決める
 
@@ -378,9 +385,16 @@ If no password is registered, FreeRDP shows its authentication dialog on connect
 **The same pitfalls were hit in order on two machines, so all of them are recorded here.**
 Assumes Ubuntu 24.04 + GNOME with xrdp built from source. (The apt build, 0.9.x, has no
 GFX/H.264 but does handle the Xwrapper and PAM parts for you.)
-Note that xorgxrdp requires an X11 session, and GNOME is phasing X11 support out —
-**on future Ubuntu (26.04-era and later?) this whole approach may stop being viable**;
-that would call for a different method (gnome-remote-desktop etc.), not a fix to these steps.
+Note that xorgxrdp requires an X11 session, and **GNOME's X11 session was removed in
+GNOME 49 (= Ubuntu 25.10)** — these steps do not work on GNOME from 25.10 onward. Remedies:
+
+1. **Migrate to gnome-remote-desktop Remote Login** (first choice) — headless multi-user
+   sessions since GNOME 47, so the dedicated-remote-account approach carries over. Still RDP,
+   so this app needs no changes (enable NLA on the profile; credentials are the dedicated
+   ones set via `grdctl --system`). H.264 is solid on NVIDIA; AMD/VA-API needs verifying
+2. **xrdp + an X11-capable desktop (XFCE etc.)** — what was removed is GNOME's session,
+   not Xorg itself; launch `xfce4-session` from `startwm.sh`, giving up GNOME
+3. **Stay on 24.04 LTS** — supported until 2029-04; these steps remain valid until then
 
 ### 0. Decide which RDP server to use
 
