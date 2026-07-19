@@ -52,6 +52,10 @@ python3 -m py_compile ubuntu_remote.py      # 構文チェック(テストは置
 ### glavine (192.168.100.201) — 2026-07-19 に xrdp を導入
 
 Ubuntu 24.04 / x86_64 / GPU は **AMD Radeon RX 6600**(NVIDIA ではないので nvenc は使えない)。
+リモート用アカウントは **john**(uid 1001、ssh 鍵配置済み)。コンソールは smoltz が使う。
+NIC は enp9s0 / MAC **`10:7c:61:45:68:41`** — サスペンドされたら `python3 tools/wake.py glavine`
+で起こす(MAC はサスペンド中 ARP で引けないのでツールに静的登録してある)。
+Mac と同一セグメント(192.168.100.x)なのでブロードキャストが直接届く。
 
 - **3389 = Remote Login**(gnome-remote-desktop システムデーモン)
 - **3390 = xrdp 0.10.6 + xorgxrdp 0.10.5**(ソースビルド)。設定は **`/etc/xrdp/`**
