@@ -59,6 +59,9 @@ python3 -m py_compile ubuntu_remote.py      # 構文チェック(テストは置
 **2 台(elwhite / glavine)で同じ落とし穴を順番に踏んだので、その全部を手順として残す。**
 Ubuntu 24.04 + GNOME で xrdp をソースビルドする前提。apt 版(0.9.x)を使うなら GFX/H.264 が
 無い代わりに、下記のうち Xwrapper と PAM はパッケージが面倒を見てくれる。
+なお xorgxrdp は X11 セッション前提。GNOME は X11 サポートを廃止する方向のため、
+**将来の Ubuntu(26.04 世代以降?)ではこの構成自体が成立しなくなる可能性がある** —
+その時はこの手順の修正ではなく方式の再検討(gnome-remote-desktop 等)になる。
 
 ### 0. どの RDP サーバーに繋ぐか決める
 
@@ -284,6 +287,21 @@ ACL で後付けする。
 サーバー側のログは `/var/log/xrdp.log` と `/var/log/xrdp-sesman.log`(root のみ読める)。
 セッション側は `~/.xorgxrdp.10.log` と `~/.xsession-errors`(ユーザーで読める)。
 
+### 9. サスペンドと Wake-on-LAN
+
+サスペンド中は当然接続できない。サスペンドすると **ARP キャッシュも切れて MAC が
+引けなくなる**ため、リモート復帰の仕込みは導入時にやっておく:
+
+```bash
+# マシン側: WoL を有効化(nmcli が恒久設定、ethtool が即時適用)。
+# BIOS/UEFI 側で WoL が無効だと効かないので、初回は実際にサスペンド→復帰で試すこと
+sudo nmcli connection modify "Wired connection 1" 802-3-ethernet.wake-on-lan magic
+sudo ethtool -s enp9s0 wol g   # 確認: sudo ethtool enp9s0 | grep -i wake → "Wake-on: g"
+```
+
+Mac 側からは `python3 tools/wake.py <名前>` で起こす。導入時に `ip link` で MAC を控え、
+`tools/wake.py` の `HOSTS` に 1 行登録しておく(glavine は登録済み)。
+
 ## 設定ファイル・ログ
 
 | パス | 内容 |
@@ -360,6 +378,9 @@ If no password is registered, FreeRDP shows its authentication dialog on connect
 **The same pitfalls were hit in order on two machines, so all of them are recorded here.**
 Assumes Ubuntu 24.04 + GNOME with xrdp built from source. (The apt build, 0.9.x, has no
 GFX/H.264 but does handle the Xwrapper and PAM parts for you.)
+Note that xorgxrdp requires an X11 session, and GNOME is phasing X11 support out —
+**on future Ubuntu (26.04-era and later?) this whole approach may stop being viable**;
+that would call for a different method (gnome-remote-desktop etc.), not a fix to these steps.
 
 ### 0. Decide which RDP server to use
 
@@ -571,6 +592,21 @@ connecting. One pass through this list on first connect catches all of them:
 
 Server logs are `/var/log/xrdp.log` and `/var/log/xrdp-sesman.log` (root only). Session-side
 logs are `~/.xorgxrdp.10.log` and `~/.xsession-errors` (readable as the user).
+
+### 9. Suspend and Wake-on-LAN
+
+A suspended machine cannot be reached — and once suspended, **its ARP entry expires so the
+MAC can no longer be looked up**. Set up remote wake at install time:
+
+```bash
+# on the machine (nmcli persists, ethtool applies immediately).
+# Ineffective if WoL is disabled in BIOS/UEFI — test with a real suspend/wake cycle once
+sudo nmcli connection modify "Wired connection 1" 802-3-ethernet.wake-on-lan magic
+sudo ethtool -s enp9s0 wol g   # verify: sudo ethtool enp9s0 | grep -i wake → "Wake-on: g"
+```
+
+From the Mac, wake with `python3 tools/wake.py <name>`. Note the MAC via `ip link` at
+install time and add a line to `HOSTS` in `tools/wake.py` (glavine is registered).
 - To get audio, install `pipewire-module-xrdp` on the server
 
 ## Config files and logs

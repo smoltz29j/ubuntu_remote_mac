@@ -1,0 +1,42 @@
+{
+  "title": "Ubuntu Remote (sdl-freerdp)",
+  "rules": [
+    {
+      "description": "sdl-freerdp のウィンドウでのみ かな/英数 を Ctrl+Shift+; に変換(リモート Ubuntu の入力ソース切替)",
+      "manipulators": [
+        {
+          "type": "basic",
+          "from": { "key_code": "japanese_kana" },
+          "to": [
+            {
+              "key_code": "semicolon",
+              "modifiers": ["left_control", "left_shift"]
+            }
+          ],
+          "conditions": [
+            {
+              "type": "frontmost_application_if",
+              "file_paths": ["sdl-freerdp$"]
+            }
+          ]
+        },
+        {
+          "type": "basic",
+          "from": { "key_code": "japanese_eisuu" },
+          "to": [
+            {
+              "key_code": "semicolon",
+              "modifiers": ["left_control", "left_shift"]
+            }
+          ],
+          "conditions": [
+            {
+              "type": "frontmost_application_if",
+              "file_paths": ["sdl-freerdp$"]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
