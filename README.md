@@ -249,7 +249,7 @@ ACL で後付けする。
 
 | 症状 | ログに出るもの | 原因と対処 |
 |---|---|---|
-| 接続直後に切れる | `ERRCONNECT_CONNECT_CANCELLED` | パスワード未登録。Keychain に登録するか認証ダイアログで入力 |
+| 接続直後に切れる | `ERRCONNECT_CONNECT_CANCELLED` | パスワード未登録。ただし**ウィンドウを閉じただけでも同じコードが出る**ので、app.log の `Connection aborted by user` の有無で判別する |
 | ログイン画面で弾かれる | `pam_authenticate failed` | **まずパスワードが正しいか疑う。** 設定差を探す前に検証すること |
 | 画面が出ない | `waitforx: Unable to open display :10` | Xwrapper.config が `allowed_users=console` のまま |
 | 一瞬で落ちる | `Window manager ... exited quickly (0 secs)` | コンソールに同一ユーザーがログイン中。ログアウトする |
@@ -513,7 +513,7 @@ Homes are separate; share directories later via a common group with setgid, or A
 
 | Symptom | Log line | Cause / fix |
 |---|---|---|
-| Drops immediately | `ERRCONNECT_CONNECT_CANCELLED` | No password registered |
+| Drops immediately | `ERRCONNECT_CONNECT_CANCELLED` | No password registered — but **closing the window yields the same code**; check app.log for `Connection aborted by user` to tell them apart |
 | Rejected at login | `pam_authenticate failed` | **Suspect the password first**, before hunting config differences |
 | No screen | `waitforx: Unable to open display :10` | `Xwrapper.config` still `allowed_users=console` |
 | Dies at once | `Window manager ... exited quickly (0 secs)` | Same user logged in at the console |
