@@ -85,6 +85,13 @@ grdctl rdp disable-port-negotiation   # 自動で戻らないようにする
 systemctl --user restart gnome-remote-desktop
 ```
 
+ファイアウォールが有効なら開けておく(elwhite は ufw が active — 許可済みだから
+繋がっているだけで、新規マシンでは忘れると**接続タイムアウトになりログにも何も出ない**):
+
+```bash
+systemctl is-active ufw && sudo ufw allow 3390/tcp
+```
+
 ### 2. ビルドと導入
 
 ```bash
@@ -116,12 +123,18 @@ make -j"$(nproc)" && sudo make install
   `--enable-strict-locations` を付けると `/usr/local/etc/xrdp` になる。**マシンごとに違うと混乱する**ので統一するか、どちらか把握しておくこと
 - nvenc は上流には無い(NVIDIA 向けの `--enable-nvenc` は fork 独自)。x264 のソフトウェア
   エンコードで十分実用になる
+- 上のタグは 2026-07 時点の最新。新しいリリースタグが出ていればそちらを使う
+  (xrdp と xorgxrdp はマイナーバージョンを揃えること)
 
 ### 3. 設定
 
 #### (A) これを忘れると動かない — 効果を実測で確認済み
 
 ```bash
+# Xorg の setuid ラッパー。Xwrapper.config を読むのはこのパッケージなので、
+# 無いと下の設定ファイルを書いても意味がない(実機 2 台ではたまたま導入済みだった)
+sudo apt install -y xserver-xorg-legacy
+
 # リモートからの Xorg 起動を許可する。無いと "waitforx: Unable to open display :10"
 printf 'allowed_users=anybody\nneeds_root_rights=yes\n' | sudo tee /etc/X11/Xwrapper.config
 
@@ -245,7 +258,18 @@ sudo -u john dbus-run-session -- sh -c "
 ホームは分かれるので、共有したいディレクトリが出てきたら共通グループ + setgid ディレクトリや
 ACL で後付けする。
 
-### 7. トラブルシュート早見表
+### 7. 導入後の動作確認
+
+躓きの大半は「セッション開始時に読まれる設定の欠落」で、症状が出るのは接続後。
+初回接続で以下を一巡すれば、その場で全部検出できる:
+
+1. デスクトップに Dock・壁紙・アイコンが出る(出なければ `.xsessionrc` → ログアウトして再接続)
+2. H.264 が効いている: `sudo grep "Matched H264 mode" /var/log/xrdp.log`
+3. 音が出る: セッション内で `pgrep -af libpipewire-module-xrdp` が返す
+4. かな/英数 で日本語入力が切り替わる
+5. 専用アカウント方式なら、コンソールにログインしたまま接続できることを確認
+
+### 8. トラブルシュート早見表
 
 | 症状 | ログに出るもの | 原因と対処 |
 |---|---|---|
@@ -362,6 +386,13 @@ grdctl rdp disable-port-negotiation
 systemctl --user restart gnome-remote-desktop
 ```
 
+If a firewall is active, open the port (elwhite runs ufw — it only works because the rule
+exists; on a new machine forgetting this means **connection timeouts with nothing in any log**):
+
+```bash
+systemctl is-active ufw && sudo ufw allow 3390/tcp
+```
+
 ### 2. Build and install
 
 ```bash
@@ -389,12 +420,18 @@ make -j"$(nproc)" && sudo make install
 - Config lands in **`/etc/xrdp`** by default (`strict_locations` defaults to `no`);
   `--enable-strict-locations` puts it in `/usr/local/etc/xrdp`. Keep this consistent across
   machines or you will confuse yourself later
+- The tags above were the latest as of 2026-07; use newer release tags if available
+  (keep xrdp and xorgxrdp on matching minor versions)
 
 ### 3. Configuration
 
 #### (A) Required — effect verified in practice
 
 ```bash
+# the setuid Xorg wrapper. Xwrapper.config is read by this package, so writing
+# the file below is meaningless without it (both reference machines happened to have it)
+sudo apt install -y xserver-xorg-legacy
+
 # allow Xorg to start for a remote session; without it: "waitforx: Unable to open display :10"
 printf 'allowed_users=anybody\nneeds_root_rights=yes\n' | sudo tee /etc/X11/Xwrapper.config
 
@@ -509,7 +546,18 @@ sudo -u john dbus-run-session -- sh -c "
 
 Homes are separate; share directories later via a common group with setgid, or ACLs.
 
-### 7. Troubleshooting
+### 7. Post-install verification
+
+Most pitfalls are missing session-start configuration, and only show symptoms after
+connecting. One pass through this list on first connect catches all of them:
+
+1. The desktop shows the dock, wallpaper and icons (if not: `.xsessionrc`, then log out and reconnect)
+2. H.264 is active: `sudo grep "Matched H264 mode" /var/log/xrdp.log`
+3. Sound works: `pgrep -af libpipewire-module-xrdp` returns a line inside the session
+4. かな/英数 toggles Japanese input
+5. With a dedicated remote account, connecting works while the console stays logged in
+
+### 8. Troubleshooting
 
 | Symptom | Log line | Cause / fix |
 |---|---|---|
