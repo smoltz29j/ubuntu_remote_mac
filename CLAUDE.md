@@ -124,8 +124,14 @@ glavine では発症していないので入れていない。出たら移植す
 - 物理コンソールにログインしたままだと **xrdp 側の WM が起動直後に終了する**。sesman ログに
   `Window manager (pid N) exited with non-zero exit code 1` /
   `exited quickly (0 secs)` が出る。**コンソールをログアウトすれば解決**する。
-- 「物理画面とリモートを同時に使いたい」場合 xrdp では原理的に無理。**Desktop Sharing
-  (glavine なら 3391)を使う** — 新規セッションを作らずコンソールの画面をそのまま共有する。
+- **制約は「同一ユーザー」の話なので、リモート専用アカウントを作れば同時利用できる**
+  (uid が違えば `/run/user/<uid>/bus` も別)。**glavine はこの方式**:
+  コンソール=`smoltz` / リモート=`john`(uid 1001、`sudo,video,render`、ssh 鍵配置済み)。
+  実測で smoltz の `:1` と john の `:10` が同時に動くことを確認済み(2026-07-19)。
+  elwhite は従来どおり「コンソールを GDM 待機画面に保つ」方式。
+- リモートで**自分の環境・ファイルそのもの**を触りたいなら専用アカウントでは目的を果たせない
+  (ホームが別)。その場合は **Desktop Sharing(glavine なら 3391)** を使う
+  — 新規セッションを作らずコンソールの画面をそのまま共有する。
 - **xrdp は切断済みセッションを保持して再接続時に再アタッチする**
   (`KillDisconnected=false` / `DisconnectedTimeLimit=0`)。そのため `.xsessionrc` のような
   **セッション開始時に読まれる設定を変えたら、RDP を繋ぎ直すだけでは反映されない**。

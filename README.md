@@ -117,36 +117,39 @@ make -j"$(nproc)" && sudo make install
 - nvenc は上流には無い(NVIDIA 向けの `--enable-nvenc` は fork 独自)。x264 のソフトウェア
   エンコードで十分実用になる
 
-### 3. 必須の設定(これを忘れると動かない)
+### 3. 設定
+
+#### (A) これを忘れると動かない — 効果を実測で確認済み
 
 ```bash
-# (a) リモートからの Xorg 起動を許可する ★これが無いとセッションが作れない
+# リモートからの Xorg 起動を許可する。無いと "waitforx: Unable to open display :10"
 printf 'allowed_users=anybody\nneeds_root_rights=yes\n' | sudo tee /etc/X11/Xwrapper.config
 
-# (b) Ubuntu セッションモードで起動させる ★これが無いと Dock も壁紙も出ない
+# Ubuntu セッションモードで起動させる。無いと Dock も壁紙も出ない
 cat > ~/.xsessionrc <<'EOS'
 export DESKTOP_SESSION=ubuntu
 export GNOME_SHELL_SESSION_MODE=ubuntu
 export XDG_CURRENT_DESKTOP=ubuntu:GNOME
 EOS
 
-# (c) GPU/DRM アクセス
-sudo usermod -aG video,render "$USER"
-
-# (d) 起動して有効化
 sudo systemctl daemon-reload
 sudo systemctl enable --now xrdp xrdp-sesman
 ```
 
-`/etc/xrdp/xrdp.ini` を編集:
+`/etc/xrdp/xrdp.ini` の `port` を決めたポート(例 `3390`)にする。
 
-| 項目 | 値 | 理由 |
-|---|---|---|
-| `port` | `3390` | 上で決めたポート |
-| `autorun` | `Xorg` | 空だとログイン画面にモジュール選択が出る |
-| `[Xorg]` の `ip` | `127.0.0.1` | |
+#### (B) 参考構成に合わせたもの — 個別の必要性は未検証
 
-`/etc/X11/xrdp/xorg.conf` の `Section "Module"` に `Load "glamoregl"` を追加する。
+以下は先行機(elwhite)との差分として一括適用したもので、**それぞれが本当に必要かは
+切り分けていない**。害は無いので揃えておいて構わないが、「これが無いと動かない」とは
+確認できていない。
+
+| 設定 | 値 |
+|---|---|
+| `xrdp.ini` の `autorun` | `Xorg`(空だとログイン画面にモジュール選択が出る) |
+| `xrdp.ini` の `[Xorg] ip` | `127.0.0.1` |
+| `/etc/X11/xrdp/xorg.conf` の `Section "Module"` | `Load "glamoregl"` を追加 |
+| グループ | `sudo usermod -aG video,render "$USER"` |
 
 ### 4. 音を出す(パッケージだけでは鳴らない)
 
@@ -160,7 +163,26 @@ Ubuntu のこのパッケージ (0.2-2) は `.so` を 1 つ入れるだけで、
 | `/usr/libexec/pipewire-module-xrdp/load_pw_modules.sh` | `755 root:root` |
 | `/etc/xdg/autostart/pipewire-xrdp.desktop` | `644 root:root` |
 
-導入済みのマシンがあれば `scp` で持ってくるのが確実。動いていればセッション内で
+上流から直接取得できる(ビルド不要)。`.desktop` は `.in` テンプレートなので
+`@pkglibexecdir@` を展開する:
+
+```bash
+sudo apt install -y libpipewire-0.3-modules-xrdp
+
+BASE=https://raw.githubusercontent.com/neutrinolabs/pipewire-module-xrdp/v0.2/instfiles
+sudo install -d /usr/libexec/pipewire-module-xrdp
+curl -fsSL $BASE/load_pw_modules.sh \
+  | sudo install -m 755 /dev/stdin /usr/libexec/pipewire-module-xrdp/load_pw_modules.sh
+curl -fsSL $BASE/pipewire-xrdp.desktop.in \
+  | sed 's#@pkglibexecdir@#/usr/libexec/pipewire-module-xrdp#' \
+  | sudo install -m 644 /dev/stdin /etc/xdg/autostart/pipewire-xrdp.desktop
+```
+
+`load_pw_modules.sh` の md5 は `2f6f8605d5641306abdf5e7faa324124`(2940 バイト、
+`devel` / `v0.2` とも同一。稼働中の elwhite の実物とバイト一致を確認済み)。
+既に動いているマシンがあれば `scp` で持ってきてもよい。
+
+動いていればセッション内で
 `pw-cli -m -d load-module libpipewire-module-xrdp sink.node.latency=2048 ...` が走っている。
 
 ### 5. 日本語入力
@@ -176,12 +198,52 @@ gsettings set org.gnome.desktop.wm.keybindings switch-input-source \
 
 ### 6. 運用上の制約
 
-- **同一ユーザーの GNOME セッションは同時に 1 つだけ。** 物理コンソールにログインしたままだと
-  xrdp 側の WM が起動直後に落ちる。**コンソールをログアウトしておくこと。**
-  物理画面と同時に使いたいなら xrdp ではなく Desktop Sharing を使う
+- **同一ユーザーの GNOME セッションは同時に 1 つだけ**(`/run/user/<uid>/bus` がユーザー単位で
+  共有されるため)。物理コンソールにログインしたままだと xrdp 側の WM が起動直後に落ちる
+  (`Window manager ... exited quickly (0 secs)`)。回避策は次項を参照
 - **xrdp は切断済みセッションを保持して再接続時に再アタッチする。**
   そのため `.xsessionrc` や autostart のような**セッション開始時に読まれる設定を変えたら、
   RDP を繋ぎ直すだけでは反映されない**。GNOME のメニューからログアウトすること
+
+### 6-1. 物理画面とリモートを同時に使いたい場合(推奨: リモート専用アカウント)
+
+上の排他制約は**同一ユーザー**の話なので、**リモート用に別アカウントを作れば解決する**。
+別ユーザーなら `/run/user/<uid>/bus` が別になり、コンソールとリモートで GNOME セッションを
+同時に動かせる。glavine ではこの方式を採っている(コンソール=`smoltz` / リモート=`john`)。
+
+| | 専用アカウント | コンソールをログアウト | Desktop Sharing |
+|---|---|---|---|
+| 同時利用 | **できる** | できない | できる |
+| 見えるもの | 別のデスクトップ・別のホーム | 自分の環境 | コンソールと同じ画面 |
+| 独立した作業 | **できる** | できる | できない |
+
+**「リモートで独立した作業をしたい」なら専用アカウントが最適。**
+「外から自分の環境・ファイルを触りたい」だけなら別ホームでは目的を果たせないので
+Desktop Sharing を使う。
+
+システム側の設定(xrdp 本体・Xwrapper・音声の autostart)は**全ユーザーに効く**ので、
+追加作業はアカウント固有の分だけ:
+
+```bash
+sudo adduser --gecos "" john
+sudo usermod -aG video,render john      # 管理作業もさせるなら sudo も足す
+
+# Ubuntu セッションモード(このアカウントにも必要)
+sudo -u john tee /home/john/.xsessionrc >/dev/null <<'EOS'
+export DESKTOP_SESSION=ubuntu
+export GNOME_SHELL_SESSION_MODE=ubuntu
+export XDG_CURRENT_DESKTOP=ubuntu:GNOME
+EOS
+
+# 日本語入力(ログイン前でも dbus-run-session 経由で設定できる)
+sudo -u john dbus-run-session -- sh -c "
+  gsettings set org.gnome.desktop.input-sources sources \"[('ibus','mozc-jp'), ('xkb','jp')]\"
+  gsettings set org.gnome.desktop.wm.keybindings switch-input-source \"['<Control><Shift>semicolon']\"
+"
+```
+
+ホームは分かれるので、共有したいディレクトリが出てきたら共通グループ + setgid ディレクトリや
+ACL で後付けする。
 
 ### 7. トラブルシュート早見表
 
@@ -328,29 +390,39 @@ make -j"$(nproc)" && sudo make install
   `--enable-strict-locations` puts it in `/usr/local/etc/xrdp`. Keep this consistent across
   machines or you will confuse yourself later
 
-### 3. Required configuration
+### 3. Configuration
+
+#### (A) Required — effect verified in practice
 
 ```bash
-# (a) allow Xorg to start for a remote session — without this no session can be created
+# allow Xorg to start for a remote session; without it: "waitforx: Unable to open display :10"
 printf 'allowed_users=anybody\nneeds_root_rights=yes\n' | sudo tee /etc/X11/Xwrapper.config
 
-# (b) start the Ubuntu session mode — without this there is no dock and no wallpaper
+# start the Ubuntu session mode; without it there is no dock and no wallpaper
 cat > ~/.xsessionrc <<'EOS'
 export DESKTOP_SESSION=ubuntu
 export GNOME_SHELL_SESSION_MODE=ubuntu
 export XDG_CURRENT_DESKTOP=ubuntu:GNOME
 EOS
 
-# (c) GPU/DRM access
-sudo usermod -aG video,render "$USER"
-
 sudo systemctl daemon-reload
 sudo systemctl enable --now xrdp xrdp-sesman
 ```
 
-In `/etc/xrdp/xrdp.ini` set `port=3390`, `autorun=Xorg` (an empty value shows a module
-chooser on the login screen) and `ip=127.0.0.1` under `[Xorg]`. Add `Load "glamoregl"` to
-the `Section "Module"` block of `/etc/X11/xrdp/xorg.conf`.
+Set `port` in `/etc/xrdp/xrdp.ini` to the port chosen above (e.g. `3390`).
+
+#### (B) Matched to the reference machine — individual necessity NOT verified
+
+These were applied as a batch to match the first machine (elwhite); **it was never isolated
+whether each one matters**. They are harmless, so mirroring them is fine, but do not read
+this as "it will not work without them".
+
+| Setting | Value |
+|---|---|
+| `autorun` in `xrdp.ini` | `Xorg` (empty shows a module chooser on the login screen) |
+| `[Xorg] ip` in `xrdp.ini` | `127.0.0.1` |
+| `Section "Module"` of `/etc/X11/xrdp/xorg.conf` | add `Load "glamoregl"` |
+| Groups | `sudo usermod -aG video,render "$USER"` |
 
 ### 4. Audio (the package alone is not enough)
 
@@ -364,9 +436,27 @@ Add these two files from upstream
 | `/usr/libexec/pipewire-module-xrdp/load_pw_modules.sh` | `755 root:root` |
 | `/etc/xdg/autostart/pipewire-xrdp.desktop` | `644 root:root` |
 
-Copying them from a machine that already works is the surest route. When it is working,
-`pw-cli -m -d load-module libpipewire-module-xrdp sink.node.latency=2048 ...` runs inside
-the session.
+They can be fetched straight from upstream — no build required. The `.desktop` file is a
+template, so `@pkglibexecdir@` has to be expanded:
+
+```bash
+sudo apt install -y libpipewire-0.3-modules-xrdp
+
+BASE=https://raw.githubusercontent.com/neutrinolabs/pipewire-module-xrdp/v0.2/instfiles
+sudo install -d /usr/libexec/pipewire-module-xrdp
+curl -fsSL $BASE/load_pw_modules.sh \
+  | sudo install -m 755 /dev/stdin /usr/libexec/pipewire-module-xrdp/load_pw_modules.sh
+curl -fsSL $BASE/pipewire-xrdp.desktop.in \
+  | sed 's#@pkglibexecdir@#/usr/libexec/pipewire-module-xrdp#' \
+  | sudo install -m 644 /dev/stdin /etc/xdg/autostart/pipewire-xrdp.desktop
+```
+
+`load_pw_modules.sh` is md5 `2f6f8605d5641306abdf5e7faa324124` (2940 bytes, identical on
+`devel` and `v0.2`, and byte-identical to the copy running on elwhite). Copying from a
+working machine via `scp` is equally fine.
+
+When it is working, `pw-cli -m -d load-module libpipewire-module-xrdp sink.node.latency=2048 ...`
+runs inside the session.
 
 ### 5. Japanese input
 
@@ -381,12 +471,43 @@ gsettings set org.gnome.desktop.wm.keybindings switch-input-source \
 
 ### 6. Operational constraints
 
-- **Only one GNOME session per user at a time.** If the physical console is logged in, the
-  xrdp window manager exits immediately. Log out of the console. To use both at once, use
-  Desktop Sharing rather than xrdp
+- **Only one GNOME session per user at a time** (`/run/user/<uid>/bus` is shared per user).
+  If the physical console is logged in, the xrdp window manager exits immediately
+  (`Window manager ... exited quickly (0 secs)`). See below for the way around it
 - **xrdp keeps disconnected sessions and re-attaches on reconnect.** Anything read at session
   start (`.xsessionrc`, autostart entries) will **not** take effect by merely reconnecting —
   log out from the GNOME menu
+
+### 6-1. Using the console and a remote session at once (recommended: a dedicated account)
+
+The constraint above applies **per user**, so creating a separate account for remote use
+solves it: a different uid means a different `/run/user/<uid>/bus`, and both GNOME sessions
+can run simultaneously. glavine is set up this way (console = `smoltz`, remote = `john`).
+
+**Pick a dedicated account when you want to do independent work remotely.** If you instead
+want to reach your *own* environment and files from outside, a separate home does not achieve
+that — use Desktop Sharing.
+
+System-wide pieces (xrdp itself, Xwrapper, the audio autostart) apply to all users, so only
+per-account setup remains:
+
+```bash
+sudo adduser --gecos "" john
+sudo usermod -aG video,render john      # add sudo too if it should administer the box
+
+sudo -u john tee /home/john/.xsessionrc >/dev/null <<'EOS'
+export DESKTOP_SESSION=ubuntu
+export GNOME_SHELL_SESSION_MODE=ubuntu
+export XDG_CURRENT_DESKTOP=ubuntu:GNOME
+EOS
+
+sudo -u john dbus-run-session -- sh -c "
+  gsettings set org.gnome.desktop.input-sources sources \"[('ibus','mozc-jp'), ('xkb','jp')]\"
+  gsettings set org.gnome.desktop.wm.keybindings switch-input-source \"['<Control><Shift>semicolon']\"
+"
+```
+
+Homes are separate; share directories later via a common group with setgid, or ACLs.
 
 ### 7. Troubleshooting
 
