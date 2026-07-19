@@ -185,6 +185,13 @@ def build_rdp_args(profile: dict) -> list[str]:
         "/gfx:AVC444",
         "+rfx",                   # GFX 非対応の xrdp 0.9 系向けフォールバック(0.9 では実質最速)
         "-nsc",                   # NSC は ARM Mac ビルドで未最適化のため使わせない
+        # 日本語入力はリモートの ibus-mozc に行わせる(Mac 側 IME を使う
+        # /kbd:unicode は SDL クライアントのセッションウィンドウでは機能しなかった)。
+        # 無指定だと macOS の入力ソース(ABC)から US 配列として申告され記号配置がずれるので、
+        # 日本語配列を明示する。なお IME の切り替えは かな/英数 キーでは不可能
+        # (macOS が IME 層より手前で消費し RDP に一切流れない)。Ctrl+Shift+; を
+        # Karabiner で合成して送る構成。詳細は CLAUDE.md「日本語入力」参照。
+        "/kbd:layout:0x00000411",
         "+auto-reconnect",
         f"/auto-reconnect-max-retries:{RETRY_MAX}",
         "+clipboard" if profile["redirect_clipboard"] else "-clipboard",
@@ -240,6 +247,9 @@ class Session:
             argv = [self.xfreerdp] + rdp_args
             payload = None
         log(f"接続開始: {display_text(self.profile)} → {self.profile['host']}:{self.profile['port']}")
+        # どのオプションで接続したかをログから確定できるようにする。パスワードは
+        # /args-from:stdin 経由で rdp_args には含まれないため平文は残らない。
+        log(f"  引数: {' '.join(rdp_args)}")
         self._log_offset = os.path.getsize(LOG_PATH)  # ユーザー中断判定用(_user_aborted_in_log)
         logf = open(LOG_PATH, "a", encoding="utf-8")
         proc = subprocess.Popen(

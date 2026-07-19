@@ -74,6 +74,54 @@ RDP サーバーが 2 つ動いている。**繋ぐべきは 3390 の xrdp**(Ubu
   パスワードも引用形式になる)。書き込みは `security -i` に stdin でコマンドを渡し、
   平文が ps に出ないようにしている。
 
+## 日本語入力(2026-07-19 実測で確定)
+
+**リモート(Ubuntu)の ibus-mozc に日本語入力させる**方針。Mac 側 IME を使う `/kbd:unicode` は
+SDL クライアントのセッションウィンドウでは機能しなかった。
+
+- **`/kbd:layout:0x00000411`(日本語配列)を明示する。** 無指定だと macOS の入力ソース(ABC)
+  から US 配列として申告され、記号配置がずれる。指定するとセッション側が
+  `model: pc105 / layout: jp` になり、`Eisu_toggle`(66)・`Henkan_Mode`(129)・
+  `Muhenkan`(131)・`Hiragana_Katakana`(208)の keysym に正しく解決される。
+- **Mac の かな/英数 キーは使えない。** ことえりが有効だと macOS が IME 層より手前で消費し、
+  Ubuntu 側には **1 イベントも到達しない**(押下時にメニューバーが あ/A で切り替わるのが証拠)。
+  ことえりを無効化すれば通る可能性はあるが、Mac 側で日本語が打てなくなるので採らない。
+- **`Ctrl+Space` 系の組み合わせも使えない。** キー自体は到達するが、**Ctrl の押下が主キーより
+  約 37ms 遅れて届く**ため、押下の瞬間に判定する GNOME のグラブと永久に一致しない
+  (8 回中 8 回とも `ctrl=0`)。macOS 側の「前の入力ソースを選択 = Ctrl+Space」が有効なのが原因。
+  一方 **`Ctrl+Shift+<文字>` では修飾キーが正しく先行する**(実測 `ctrl=1 shift=1`)。
+- **結論の構成**:
+  - Ubuntu 側 — `gsettings set org.gnome.desktop.wm.keybindings switch-input-source
+    "['<Control><Shift>semicolon']"`。入力ソースは `[('ibus','mozc-jp'), ('xkb','jp')]` の 2 つ
+    なのでこれは**トグル**。真の ON/OFF が要るなら mozc 単独ソース化 + mozc キーマップの
+    `IMEOn`/`IMEOff` が正攻法(未実施)。
+  - Mac 側 — **Karabiner-Elements** で `sdl-freerdp` 前面時のみ かな/英数 → `Ctrl+Shift+;` に変換。
+    ルールは `~/.config/karabiner/assets/complex_modifications/ubuntu_remote_ime.json`。
+    **`sdl-freerdp` は `.app` バンドルではなくバンドル ID を持たない**ため、
+    `frontmost_application_if` は `bundle_identifiers` ではなく `file_paths` の
+    末尾一致(`"sdl-freerdp$"`)で書く(パスにバージョン番号が入るので前方一致は不可)。
+  - ランチャー本体でこの変換をやるには CGEventTap(ctypes + CFRunLoop、約 200 行)が必要で、
+    「入力監視」権限が **Python バイナリのパスに紐づく**ため brew python 更新で壊れる。
+    採らずに Karabiner に寄せた。
+
+### キー到達を実測する手順(この種の調査の定石)
+
+サーバー側で XI2 の raw イベントを取ると、**どのキーがどの修飾キー状態で届いたか**が確定できる。
+`xev -root` はフォーカスが他ウィンドウにあると拾えないので使わない。
+
+```bash
+ssh smoltz@192.168.101.201 'export DISPLAY=:10 XAUTHORITY=$HOME/.Xauthority
+  setsid nohup timeout 900 xinput test-xi2 --root > /tmp/xi2.log 2>&1 < /dev/null & disown'
+# keycode は `xmodmap -pke` で keysym に引き当てる
+```
+
+- keycode **8**(`ISO_Level5_Shift`)が約 100ms 間隔で大量に出るが、これは押鍵と無関係の定常ノイズ。
+- **Mac 側のキーログは取れない** — brew の FreeRDP は `WITH_DEBUG_SDL_KBD_EVENTS=OFF` ビルド。
+  よって「Mac が食った」か「FreeRDP が送らなかった」かはサーバー側の到達有無とメニューバーの
+  あ/A 表示で切り分ける。
+- **ssh 越しの `pkill -f <パターン>` は自分自身を殺す**(リモートコマンド行が同じ文字列を含むため
+  マッチする)。pid を直接 kill するか、パターンを分割して書く。
+
 ## Windows 版との対応表(実装済み)
 
 | Windows 版 | Mac 版での対応 |
