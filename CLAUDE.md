@@ -56,6 +56,8 @@ Ubuntu 24.04 / x86_64 / GPU は **AMD Radeon RX 6600**(NVIDIA ではないので
 NIC は enp9s0 / MAC **`10:7c:61:45:68:41`** — サスペンドされたら `python3 tools/wake.py glavine`
 で起こす(MAC はサスペンド中 ARP で引けないのでツールに静的登録してある)。
 Mac と同一セグメント(192.168.100.x)なのでブロードキャストが直接届く。
+WoL は NetworkManager で `magic` に設定済み(2026-07-19)だが、**実サスペンドからの
+復帰は未検証**(BIOS 側の対応が未確認)。初回に空振りしたら物理復帰 + BIOS 設定を疑う。
 
 - **3389 = Remote Login**(gnome-remote-desktop システムデーモン)
 - **3390 = xrdp 0.10.6 + xorgxrdp 0.10.5**(ソースビルド)。設定は **`/etc/xrdp/`**
