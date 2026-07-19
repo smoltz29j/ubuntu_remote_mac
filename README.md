@@ -42,6 +42,12 @@ brew install freerdp python python-tk
 ./run.sh                                    # Tk 8.6+ の python3 を探して起動
 ```
 
+ターミナルを使わない場合は **`Ubuntu Remote.app` をダブルクリック**(中身は `run.sh` を
+呼ぶだけの薄いバンドル)。Finder から Dock へドラッグしておけばワンクリックで起動できる。
+バンドルは**リポジトリ内に置いたまま**使うこと(相対参照のため、/Applications へコピー
+すると動かない)。既知の制限: Dock 上の表示名は「Python」になる(Tk が python framework の
+情報で自己申告するため。ウィンドウタイトルは正しく、機能面の影響はない)。
+
 ```bash
 python3 -m py_compile ubuntu_remote.py      # 構文チェック(テストは置かない方針。動作確認は実機接続)
 ```
@@ -367,6 +373,12 @@ Tuned specifically for xrdp. Verified against both the 0.9 series (the default o
 brew install freerdp python python-tk
 ./run.sh                                    # finds a python3 with Tk 8.6+ and launches
 ```
+
+To launch without a terminal, **double-click `Ubuntu Remote.app`** (a thin bundle that just
+calls `run.sh`). Drag it to the Dock for one-click launch. Keep the bundle **inside the
+repository** (it references the repo relatively; a copy in /Applications will not work).
+Known limitation: the Dock shows the process as "Python" (Tk reports the python framework's
+identity; the window title is correct and nothing functional is affected).
 
 ```bash
 python3 -m py_compile ubuntu_remote.py      # syntax check (no test suite by design; verification is done against a real server)
