@@ -44,8 +44,14 @@ brew install freerdp python python-tk
 
 ターミナルを使わない場合は **`Ubuntu Remote.app` をダブルクリック**(中身は `run.sh` を
 呼ぶだけの薄いバンドル)。Finder から Dock へドラッグしておけばワンクリックで起動できる。
-バンドルは**リポジトリ内に置いたまま**使うこと(相対参照のため、/Applications へコピー
-すると動かない)。既知の制限: Dock 上の表示名は「Python」になる(Tk が python framework の
+バンドルは**リポジトリ内に置いたまま**使うこと(相対参照のため、/Applications へ**コピー**
+すると動かない)。Launchpad や Spotlight から呼びたい場合は**シンボリックリンク**なら OK
+(実測済み):
+
+```bash
+ln -s "$(pwd)/Ubuntu Remote.app" "/Applications/Ubuntu Remote.app"
+```
+既知の制限: Dock 上の表示名は「Python」になる(Tk が python framework の
 情報で自己申告するため。ウィンドウタイトルは正しく、機能面の影響はない)。
 
 ```bash
@@ -376,7 +382,13 @@ brew install freerdp python python-tk
 
 To launch without a terminal, **double-click `Ubuntu Remote.app`** (a thin bundle that just
 calls `run.sh`). Drag it to the Dock for one-click launch. Keep the bundle **inside the
-repository** (it references the repo relatively; a copy in /Applications will not work).
+repository** (it references the repo relatively; a **copy** in /Applications will not work).
+To launch from Launchpad or Spotlight, a **symlink** is fine (verified):
+
+```bash
+ln -s "$(pwd)/Ubuntu Remote.app" "/Applications/Ubuntu Remote.app"
+```
+
 Known limitation: the Dock shows the process as "Python" (Tk reports the python framework's
 identity; the window title is correct and nothing functional is affected).
 
