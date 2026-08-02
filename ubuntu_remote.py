@@ -31,6 +31,7 @@ KEYCHAIN_SERVICE = APP_NAME
 RETRY_MAX = 5          # 非ユーザー起因の切断をリトライする上限(Windows 版と同じ)
 RETRY_INTERVAL = 3.0   # リトライ間隔(秒)
 STABLE_UPTIME = 60.0   # この秒数以上続いたセッションが切れたらリトライ回数を数え直す
+LOG_MAX_BYTES = 5 * 1024 * 1024  # 起動時にこれを超えていたら app.log.1 へ退避(1 世代)
 
 # sdl-freerdp のユーザー起因の exit code(SDL クライアント自身もエラー表示しない集合)。
 # 0=正常終了, 1=DISCONNECT, 2=LOGOFF(リモートでログアウト), 11=DISCONNECT_BY_USER,
@@ -148,7 +149,11 @@ def keychain_get_password(profile_id: str) -> str | None:
             continue
         m = re.match(r'^password: 0x([0-9A-Fa-f]+)', line)
         if m:
-            return bytes.fromhex(m.group(1)).decode("utf-8")
+            try:
+                return bytes.fromhex(m.group(1)).decode("utf-8")
+            except UnicodeDecodeError:
+                log(f"Keychain のパスワードが UTF-8 として復号できません: {profile_id}")
+                return None
         m = re.match(r'^password: "(.*)"$', line, re.DOTALL)
         if m:
             return m.group(1)
@@ -222,13 +227,13 @@ class Session:
         self.state = "接続中"
         self.alive = True
         self._proc: subprocess.Popen | None = None
-        self._user_stop = False
+        self._stop_event = threading.Event()  # set = ユーザーによる「切断」
         self._log_offset = 0  # この接続の sdl-freerdp 出力が app.log のどこから始まるか
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
     def stop(self) -> None:
-        self._user_stop = True
+        self._stop_event.set()  # リトライ間隔の待機中でも即座に中断できる
         proc = self._proc
         if proc and proc.poll() is None:
             proc.terminate()
@@ -324,9 +329,12 @@ class Session:
         得るが、単一利用が前提の道具なので許容)。
         """
         try:
-            with open(LOG_PATH, encoding="utf-8", errors="replace") as f:
-                f.seek(self._log_offset)
-                tail = f.read()
+            with open(LOG_PATH, "rb") as f:
+                # マーカーは切断時に出る = このセッション出力の末尾付近にあるので、
+                # 長時間セッションでログが肥大していても末尾 1 MiB だけ読めば足りる
+                size = f.seek(0, os.SEEK_END)
+                f.seek(max(self._log_offset, size - 1024 * 1024))
+                tail = f.read().decode("utf-8", errors="replace")
         except OSError:
             return False
         return ("Connection aborted by user" in tail
@@ -342,12 +350,14 @@ class Session:
                 log(f"xfreerdp の起動に失敗: {e}")
                 self.state = "起動失敗"
                 break
+            if self._stop_event.is_set():  # _spawn 中に「切断」された場合の取りこぼし防止
+                self._proc.terminate()
             self.state = "接続中"
             self._maximize_window()
             rc = self._proc.wait()
             uptime = time.monotonic() - started
             log(f"切断: {display_text(self.profile)} (exit={rc}, uptime={uptime:.0f}s)")
-            if (self._user_stop or rc in USER_EXIT_CODES
+            if (self._stop_event.is_set() or rc in USER_EXIT_CODES
                     or (rc == EXIT_CONN_FAILED and self._user_aborted_in_log())):
                 self.state = "切断"
                 break
@@ -360,7 +370,9 @@ class Session:
                 break
             self.state = f"再接続中 ({retries}/{RETRY_MAX})"
             log(f"再接続 {retries}/{RETRY_MAX}: {display_text(self.profile)}")
-            time.sleep(RETRY_INTERVAL)
+            if self._stop_event.wait(RETRY_INTERVAL):  # 待機中の「切断」で即終了
+                self.state = "切断"
+                break
         self.alive = False
 
 
@@ -437,8 +449,10 @@ class ProfileDialog(tk.Toplevel):
             return
         try:
             port = int(self._vars["port"].get().strip() or "3389")
+            if not 1 <= port <= 65535:
+                raise ValueError(port)
         except ValueError:
-            messagebox.showwarning("入力不足", "ポートは数値で入力してください。", parent=self)
+            messagebox.showwarning("入力不足", "ポートは 1〜65535 の数値で入力してください。", parent=self)
             return
         self.result = {
             **self._profile,
@@ -453,6 +467,12 @@ class ProfileDialog(tk.Toplevel):
         }
         entered = self._vars["password"].get()
         if entered:
+            # /args-from:stdin は 1 行 = 1 引数のため、改行入りパスワードは渡せない
+            if "\n" in entered or "\r" in entered:
+                messagebox.showwarning(
+                    "使用できないパスワード",
+                    "改行を含むパスワードは扱えません。", parent=self)
+                return
             self.password = entered
         self.destroy()
 
@@ -572,7 +592,7 @@ class MainWindow:
         self.profiles.append(dialog.result)
         save_profiles(self.profiles)
         if dialog.password is not None:
-            keychain_set_password(dialog.result["id"], dialog.password)
+            self._save_password(dialog.result["id"], dialog.password)
         self.refresh_tree()
 
     def edit_profile(self) -> None:
@@ -585,8 +605,18 @@ class MainWindow:
         self.profiles = [dialog.result if p["id"] == profile["id"] else p for p in self.profiles]
         save_profiles(self.profiles)
         if dialog.password is not None:  # 空欄 = 既存パスワード維持
-            keychain_set_password(profile["id"], dialog.password)
+            self._save_password(profile["id"], dialog.password)
         self.refresh_tree()
+
+    def _save_password(self, profile_id: str, password: str) -> None:
+        # 保存失敗を黙って握りつぶすと「登録したのに接続時にダイアログが出る」ように
+        # 見えて原因が分からないため、ここでユーザーに知らせる
+        if not keychain_set_password(profile_id, password):
+            messagebox.showwarning(
+                "パスワード保存に失敗",
+                "Keychain へのパスワード保存に失敗しました。\n"
+                "接続時は FreeRDP の認証ダイアログで入力してください。\n"
+                "(詳細は app.log を参照)", parent=self.root)
 
     def delete_profile(self) -> None:
         profile = self.selected_profile()
@@ -604,9 +634,20 @@ class MainWindow:
         self.refresh_tree()
 
 
+def rotate_log() -> None:
+    # sdl-freerdp の出力も app.log に溜まるため、放っておくと際限なく肥大化する。
+    # 起動時(セッションの _log_offset 参照が始まる前)にだけ 1 世代退避する。
+    try:
+        if os.path.getsize(LOG_PATH) > LOG_MAX_BYTES:
+            os.replace(LOG_PATH, LOG_PATH + ".1")
+    except OSError:
+        pass  # 未作成など。ログが無いだけなので何もしない
+
+
 def main() -> None:
     global SCREEN_SIZE
     os.makedirs(SUPPORT_DIR, exist_ok=True)
+    rotate_log()
     log("起動")
     root = tk.Tk()
     SCREEN_SIZE = (root.winfo_screenwidth(), root.winfo_screenheight())
