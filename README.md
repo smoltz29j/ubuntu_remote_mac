@@ -11,6 +11,7 @@ Windows 版 [ubuntu_remote](https://github.com/smoltz29j/ubuntu_remote) の姉�
 - **接続プロファイル管理** — 複数の接続先を一覧に登録し、ダブルクリックで接続。パスワードは macOS Keychain に保存(JSON やログに平文を残さない)
 - **自動ログイン** — 接続情報を `/args-from:stdin` で FreeRDP に渡し、xrdp のログイン画面を自動突破(平文パスワードが `ps` に一瞬も出ない)
 - **自動再接続** — FreeRDP 組み込みの再接続に加え、ランチャー側でも非ユーザー起因の異常終了を最大 5 回、3 秒間隔でリトライ。ウィンドウを閉じた・リモートでログアウトした等のユーザー起因の終了ではリトライしない
+- **先客チェック** — 接続前に別の PC が同じ接続先に接続していないかを ssh 経由で確認し、いれば接続を中止(xrdp は同一セッションへの新しい接続が古い接続を蹴るため、知らずに相手を切断してしまうのを防ぐ)。接続先へ鍵認証の ssh が通ることが前提で、通らない場合は従来どおり接続する
 - **全画面表示** — 「全画面」ボタンまたは F11 で macOS ネイティブ全画面を切替。解除はもう一度押すか、マウスを画面上端に寄せてメニューバーの緑ボタンから
 - **ウィンドウの自動最大化** — SDL クライアントが Retina で半分サイズに開いてしまう問題を、接続直後に AppleScript で画面いっぱいまで補正(`/smart-sizing` で中身も追従)
 - **音声リダイレクト** — サーバー側に `pipewire-module-xrdp` があればクライアントで再生
@@ -349,6 +350,7 @@ This is the sibling project of [ubuntu_remote](https://github.com/smoltz29j/ubun
 - **Connection profile management** — Register multiple hosts in a list and connect with a double-click. Passwords are stored in the macOS Keychain (never in plain text in JSON or logs)
 - **Auto login** — Credentials are passed to FreeRDP via `/args-from:stdin`, automatically passing the xrdp login screen (the plaintext password never appears in `ps`)
 - **Auto reconnect** — In addition to FreeRDP's built-in reconnection, the launcher retries abnormal exits up to 5 times at 3-second intervals. User-initiated exits (closing the window, logging out on the remote, etc.) are not retried
+- **Busy-host guard** — Before connecting, checks over ssh whether another PC is already connected to the target, and aborts if so (xrdp kicks the old connection when a new one arrives at the same session, so this prevents unknowingly disconnecting someone else). Requires key-based ssh to the target host; if ssh is unavailable the connection proceeds as before
 - **Full screen** — Toggle native macOS full screen with the "全画面" (Full Screen) button or F11. Exit by pressing it again, or move the mouse to the top edge and use the green button in the menu bar
 - **Automatic window maximization** — Works around the SDL client opening at half size on Retina displays by resizing the window to fill the screen via AppleScript right after connecting (contents follow thanks to `/smart-sizing`)
 - **Audio redirection** — Plays sound on the client if the server has `pipewire-module-xrdp` installed

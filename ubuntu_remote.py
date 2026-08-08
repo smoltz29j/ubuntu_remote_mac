@@ -168,6 +168,46 @@ def keychain_delete_password(profile_id: str) -> None:
         capture_output=True, text=True)
 
 
+# ---------------------------------------------------------------- 接続前チェック
+
+def _local_ipv4s() -> set[str]:
+    r = subprocess.run(["ifconfig"], capture_output=True, text=True)
+    return set(re.findall(r"\binet (\d+\.\d+\.\d+\.\d+)", r.stdout))
+
+
+def other_rdp_clients(host: str, port: int) -> list[str] | None:
+    """接続先の RDP ポートに確立済み接続を持つ「他の PC」の IP 一覧を返す。
+
+    xrdp は同一セッションへ新しい接続が来ると古い接続を蹴る(CLAUDE.md
+    「接続がすぐ切れるとき」参照。2026-08-08 に別マシンとの蹴り合いを実測)ため、
+    先客がいるときはこちらから接続しない、の判定に使う。接続先で ss を実行する
+    必要があるので ssh(鍵認証)経由。この Mac 自身の接続(= 全ローカル IP)は
+    先客に数えない。ssh が通らない・ss が無いなど確認できない場合は None を返す
+    (= 判定不能。ガードは best-effort とし、従来どおり接続する)。
+    """
+    try:
+        r = subprocess.run(
+            ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", host,
+             f"ss -Htn state established '( sport = :{port} )'"],
+            capture_output=True, text=True, timeout=12)
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if r.returncode != 0:
+        return None
+    local = _local_ipv4s()
+    peers: list[str] = []
+    for line in r.stdout.splitlines():
+        parts = line.split()  # Recv-Q Send-Q Local:Port Peer:Port
+        if len(parts) < 4:
+            continue
+        ip = parts[3].rsplit(":", 1)[0].strip("[]")
+        if ip.startswith("::ffff:"):  # IPv4-mapped IPv6 表記
+            ip = ip[len("::ffff:"):]
+        if ip not in local and ip not in peers:
+            peers.append(ip)
+    return peers
+
+
 # ---------------------------------------------------------------- セッション
 
 def build_rdp_args(profile: dict) -> list[str]:
@@ -219,6 +259,8 @@ class Session:
     RETRY_MAX 回・RETRY_INTERVAL 秒間隔で再起動する(Windows 版の RdpSessionView と
     同じ方針)。ユーザー起因の終了(USER_EXIT_CODES、ウィンドウを閉じた場合の
     131+中断ログ、「切断」ボタン経由)ではリトライしない。
+    接続前(初回・再接続とも)に other_rdp_clients で先客(別 PC)を確認し、
+    いれば接続しない(相手を蹴って奪い合いになるのを防ぐ)。
     """
 
     def __init__(self, profile: dict, xfreerdp: str):
@@ -226,6 +268,7 @@ class Session:
         self.xfreerdp = xfreerdp
         self.state = "接続中"
         self.alive = True
+        self.blocked_by: str | None = None  # 接続を中止させた先客の IP(UI 通知用)
         self._proc: subprocess.Popen | None = None
         self._stop_event = threading.Event()  # set = ユーザーによる「切断」
         self._log_offset = 0  # この接続の sdl-freerdp 出力が app.log のどこから始まるか
@@ -343,6 +386,17 @@ class Session:
     def _run(self) -> None:
         retries = 0
         while True:
+            # 先客チェック: 別の PC が接続中なら、こちらが接続すると相手を蹴って
+            # 奪い合いになるだけなので中止する(初回・自動再接続とも)。
+            others = other_rdp_clients(self.profile["host"], self.profile["port"])
+            if self._stop_event.is_set():  # チェック中(ssh 最大数秒)の「切断」
+                self.state = "切断"
+                break
+            if others:
+                self.blocked_by = ", ".join(others)
+                self.state = "先客あり"
+                log(f"接続中止: {display_text(self.profile)} には別の PC が接続中 ({self.blocked_by})")
+                break
             started = time.monotonic()
             try:
                 self._proc = self._spawn()
@@ -537,6 +591,15 @@ class MainWindow:
                 del self.sessions[pid]
             if self.tree.exists(pid):
                 self.tree.set(pid, "state", session.state)
+            if not session.alive and session.blocked_by:
+                blocked, session.blocked_by = session.blocked_by, None
+                messagebox.showwarning(
+                    "先客あり",
+                    f"{display_text(session.profile)} には別の PC ({blocked}) が接続中のため、"
+                    "接続を中止しました。\n"
+                    "接続すると相手を切断してしまいます(xrdp は同一セッションの新しい接続が"
+                    "古い接続を蹴ります)。\n"
+                    "相手側の RDP クライアントを終了してから接続し直してください。")
         self.root.after(500, self._poll_sessions)
 
     def selected_id(self) -> str | None:
