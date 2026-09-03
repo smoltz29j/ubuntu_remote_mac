@@ -260,17 +260,86 @@ SDL クライアントのセッションウィンドウでは機能しなかっ�
     `IMEOn`/`IMEOff` が正攻法(未実施)。**接続先ごとに設定が要る** — Karabiner のルールは
     前面が `sdl-freerdp` なら接続先を問わず `Ctrl+Shift+;` を送るので、繋ぐ Ubuntu 側すべてで
     同じキーバインドにしておくこと(elwhite / glavine とも設定済み)。
-  - Mac 側 — **Karabiner-Elements** で `sdl-freerdp` 前面時のみ かな/英数 → `Ctrl+Shift+;` に変換。
-    ルールは `~/.config/karabiner/assets/complex_modifications/ubuntu_remote_ime.json`。
-    **同じものをリポジトリの `karabiner/ubuntu_remote_ime.json` に収録**してある。
-    新しい Mac では assets/complex_modifications/ へコピーし、Karabiner の
-    Complex Modifications → Add rule で有効化する(karabiner.json への直接追記でも可)。
-    **`sdl-freerdp` は `.app` バンドルではなくバンドル ID を持たない**ため、
-    `frontmost_application_if` は `bundle_identifiers` ではなく `file_paths` の
-    末尾一致(`"sdl-freerdp$"`)で書く(パスにバージョン番号が入るので前方一致は不可)。
+  - Mac 側 — **変換ツール無し。`Ctrl+Shift+;` を直接押す**(2026-09-03 以降)。
+    2026-09-03 までは **Karabiner-Elements** で `sdl-freerdp` 前面時のみ かな/英数 →
+    `Ctrl+Shift+;` に変換していた(ルールは記録として `karabiner/ubuntu_remote_ime.json` に残す。
+    `frontmost_application_if` は `file_paths` の末尾一致 `"sdl-freerdp$"` で書く必要があった)。
+    撤去理由: Karabiner 16.x は Console-User-Server が **3 秒ごとにヘルパー 2 本 + launchctl を
+    起動し続ける実装**(settings_window_guidance_manager の無条件タイマー、16.2.2 beta でも同じ。
+    上流 #4493/#4496/#4518)で、常時プロセス生成の原因になっていたため。
   - ランチャー本体でこの変換をやるには CGEventTap(ctypes + CFRunLoop、約 200 行)が必要で、
-    「入力監視」権限が **Python バイナリのパスに紐づく**ため brew python 更新で壊れる。
-    採らずに Karabiner に寄せた。
+    「入力監視」権限が **Python バイナリのパスに紐づく**ため brew python 更新で壊れる。採らない。
+
+### かな/英数 を通す計画(未実施、2026-09-03 調査)
+
+「macOS が消費する」は誤りの可能性が高い。SDL は Mac の かな(keyCode 104)/英数(102) を
+`SDL_SCANCODE_LANG1/LANG2` として渡すが、**FreeRDP 3.30.0 以前の SDL3 クライアントがこの 2 つを
+`RDP_SCANCODE_UNKNOWN` にして捨てていた**。FreeRDP 3.31.1(2026-08-29 のコミット
+"support jp YEN/RO/EISUU/KANA keys")で かな → 0x72、英数 → 0x71 に対応。brew の freerdp は
+3.31.1 が bottle 済み(2026-09-03 時点、依存パッケージ無し)。
+
+ただし xrdp 0.10.6 + xorgxrdp 0.10.5 は **RDP スキャンコード + 8 を X keycode にするだけ**
+(xorgxrdp `rdpKeyboard.c` `KbdAddEvent` の default 節)で、elwhite の `:10`(rules=base,
+layout=jp)では keycode 121/122 に keysym が無い。そのため FreeRDP 側で keysym の載っている
+スキャンコードへ付け替える:
+
+| Mac キー | FreeRDP が送る | remap 先 | X keycode | keysym(実測 `xmodmap -pke`) |
+|---|---|---|---|---|
+| かな | 0x72 | 0x79 | 129 | `Henkan_Mode` |
+| 英数 | 0x71 | 0x7B | 131 | `Muhenkan` |
+
+手順:
+1. `brew upgrade freerdp`(3.31.1 以上)
+2. `build_rdp_args` に `"/kbd:remap:0x72=0x79,remap:0x71=0x7b"` を追加
+   (SDL3 クライアントは `freerdp_keyboard_remap_key` を通すので remap が効く)
+3. 接続先ごとに `gsettings set org.gnome.desktop.wm.keybindings switch-input-source
+   "['Henkan_Mode', 'Muhenkan']"`(真の ON/OFF にするなら mozc キーマップで
+   Henkan=IMEOn / Muhenkan=IMEOff)
+4. 上の「キー到達を実測する手順」で keycode 129/131 が届くことを確認してから README を更新
+
+**未確認**: macOS がことえり有効時に SDL ウィンドウへ かな/英数 の keyDown を渡すか。
+以前の「1 イベントも到達しない」実測は FreeRDP 3.30 が捨てていた時のものなので、
+3.31.1 で再測定が必要。届かなければ `Ctrl+Shift+;` 運用のまま。
+
+#### 調査記録(2026-09-03、根拠の所在)
+
+- **FreeRDP 側の脱落箇所**: `client/SDL/SDL3/sdl_input.cpp` の SDL→RDP 変換表。
+  3.30.0 / 3.31.0 は `ENTRY(SDL_SCANCODE_LANG1, RDP_SCANCODE_UNKNOWN)`、
+  `ENTRY(SDL_SCANCODE_LANG2, RDP_SCANCODE_UNKNOWN)`。3.31.1 は
+  `LANG1 → RDP_SCANCODE_KANA_HANGUL (0x72)`、`LANG2 → RDP_SCANCODE_HANJA_KANJI (0x71)`、
+  併せて `INTERNATIONAL3 → BACKSLASH_JP (¥)`、`INTERNATIONAL1 → ABNT_C1 (ろ)`。
+  brew の sdl-freerdp は SDL3 リンク(`otool -L` で libSDL3 を確認)。
+- **SDL 側**: `src/events/scancodes_darwin.h` で Mac keyCode 102 → `LANG2`(Eisu)、
+  104 → `LANG1`(Kana)。SDL2/SDL3 とも同じ。
+- **remap の適用箇所**: 同 `sdl_input.cpp` で `freerdp_keyboard_remap_key(_remapTable, rdp_scancode)`
+  を通してから送信。`/kbd:remap:` は `/list:kbd-scancode` の 16 進で指定
+  (例 `/kbd:remap:0x1e=0x1f`)。
+- **xrdp 側の変換**: xrdp 0.10.6 にはスキャンコード→keycode 変換(`common/scancode.c`)が
+  無く(0.11 系で追加)、そのまま xorgxrdp へ渡る。xorgxrdp 0.10.5 `xrdpkeyb/rdpKeyboard.c`
+  `KbdAddEvent` は修飾・テンキー・Win キー等だけ特別扱いし、それ以外は
+  `x_scancode = rdp_scancode + MIN_KEY_CODE(8)`。0x70〜0x7B は全部 default 節。
+- **elwhite `:10` の keysym**(`setxkbmap -query`: rules=base, model=pc105, layout=jp。
+  `xmodmap -pke` 実測):
+
+  | keycode | keysym |
+  |---|---|
+  | 49 | Zenkaku_Hankaku |
+  | 66 | Eisu_toggle(Caps 位置) |
+  | 120, 121, 122 | (空)← かな 0x72 / 英数 0x71 / ひらがな 0x70 がそのまま落ちる先 |
+  | 129 | Henkan_Mode |
+  | 131 | Muhenkan |
+  | 208 | Hiragana_Katakana |
+  | 209 / 210 | Hangul / Hangul_Hanja |
+
+  glavine も Ubuntu 24.04.4 + xrdp 0.10.6 で同構成(km-00000411.ini も同一)。
+  なお `/etc/xrdp/km-00000411.ini` は Xvnc バックエンド用で、xorgxrdp 経路では参照されない。
+- **Karabiner 撤去の根拠**: `Karabiner-Console-User-Server`(launchctl `forks = 2794` / 40 分)が
+  `settings_window_guidance_manager::async_start()` の `std::chrono::seconds(3)` タイマーで
+  `core-daemons-enabled` / `core-agents-enabled` / `running` ×2 をヘルパーアプリ経由で実行し続ける。
+  16.2.0 stable、16.2.2 beta、main いずれも同じ。設定で止める手段は無い。アイドル時の合計負荷は
+  Karabiner + trustd + backgroundtaskmanagementd で CPU 約 1.5%。
+  同日の Mac フリーズ(プロセス生成の暴走)の発生源ではなかった(暴走中もこのループは 3 秒間隔のまま)が、
+  用途がこのプロジェクトの かな/英数 変換だけだったので撤去した。
 
 ### キー到達を実測する手順(この種の調査の定石)
 

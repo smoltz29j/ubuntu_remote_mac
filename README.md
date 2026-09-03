@@ -223,14 +223,19 @@ curl -fsSL $BASE/pipewire-xrdp.desktop.in \
 
 ### 5. 日本語入力
 
-Mac の かな/英数 キーは **macOS が IME 層より手前で消費するため RDP には一切流れない**。
-Karabiner-Elements で `sdl-freerdp` 前面時のみ別のキーへ変換して送る構成にしている
-(詳細は CLAUDE.md)。Ubuntu 側は**接続先ごとに**同じキーバインドを設定しておくこと:
+入力ソースの切替は **`Ctrl+Shift+;`**(2026-09-03 以降、Mac 側の変換ツールは無し)。
+Ubuntu 側は**接続先ごとに**同じキーバインドを設定しておくこと:
 
 ```bash
 gsettings set org.gnome.desktop.wm.keybindings switch-input-source \
   "['<Control><Shift>semicolon']"
 ```
+
+Mac の かな/英数 キーは FreeRDP 3.30 以前の SDL クライアントが捨てていた(3.31.1 で対応)。
+物理キーで切り替えたい場合の手順(未実施)は CLAUDE.md の「かな/英数 を通す計画」を参照。
+以前は Karabiner-Elements で `sdl-freerdp` 前面時のみ `Ctrl+Shift+;` へ変換していたが、
+Karabiner 16.x が 3 秒ごとにプロセスを起動し続ける実装だったため 2026-09-03 に撤去した
+(ルールは `karabiner/ubuntu_remote_ime.json` に記録として残す)。
 
 ### 6. 運用上の制約
 
@@ -289,7 +294,7 @@ ACL で後付けする。
 1. デスクトップに Dock・壁紙・アイコンが出る(出なければ `.xsessionrc` → ログアウトして再接続)
 2. H.264 が効いている: `sudo grep "Matched H264 mode" /var/log/xrdp.log`
 3. 音が出る: セッション内で `pgrep -af libpipewire-module-xrdp` が返す
-4. かな/英数 で日本語入力が切り替わる
+4. `Ctrl+Shift+;` で日本語入力が切り替わる
 5. 専用アカウント方式なら、コンソールにログインしたまま接続できることを確認
 
 ### 8. トラブルシュート早見表
@@ -558,14 +563,19 @@ runs inside the session.
 
 ### 5. Japanese input
 
-macOS consumes the かな/英数 keys before any application sees them, so they never reach RDP.
-Karabiner-Elements remaps them to another chord while `sdl-freerdp` is frontmost (see
-CLAUDE.md). Configure the matching binding on **every** Ubuntu host you connect to:
+Input sources are switched with **`Ctrl+Shift+;`** (no key-remapping tool on the Mac since
+2026-09-03). Configure the matching binding on **every** Ubuntu host you connect to:
 
 ```bash
 gsettings set org.gnome.desktop.wm.keybindings switch-input-source \
   "['<Control><Shift>semicolon']"
 ```
+
+The Mac かな/英数 keys were dropped by the FreeRDP SDL client up to 3.30 (mapped in 3.31.1).
+The not-yet-done plan for using the physical keys is in CLAUDE.md ("かな/英数 を通す計画").
+Karabiner-Elements used to remap them to `Ctrl+Shift+;` while `sdl-freerdp` was frontmost;
+it was removed on 2026-09-03 because Karabiner 16.x spawns helper processes every 3 seconds
+(the rule is kept for reference in `karabiner/ubuntu_remote_ime.json`).
 
 ### 6. Operational constraints
 
@@ -615,7 +625,7 @@ connecting. One pass through this list on first connect catches all of them:
 1. The desktop shows the dock, wallpaper and icons (if not: `.xsessionrc`, then log out and reconnect)
 2. H.264 is active: `sudo grep "Matched H264 mode" /var/log/xrdp.log`
 3. Sound works: `pgrep -af libpipewire-module-xrdp` returns a line inside the session
-4. かな/英数 toggles Japanese input
+4. `Ctrl+Shift+;` toggles Japanese input
 5. With a dedicated remote account, connecting works while the console stays logged in
 
 ### 8. Troubleshooting
