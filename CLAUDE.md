@@ -267,6 +267,14 @@ SDL クライアントのセッションウィンドウでは機能しなかっ�
     撤去理由: Karabiner 16.x は Console-User-Server が **3 秒ごとにヘルパー 2 本 + launchctl を
     起動し続ける実装**(settings_window_guidance_manager の無条件タイマー、16.2.2 beta でも同じ。
     上流 #4493/#4496/#4518)で、常時プロセス生成の原因になっていたため。
+    **撤去の実手順(2026-09-03 実施、次に外すときの落とし穴)**: `brew uninstall --cask
+    karabiner-elements` はファイルと pkg レシートを消すだけで、起動中のデーモン・launchd 登録・
+    DriverKit 拡張が残る。gui ドメインは `launchctl bootout/disable gui/$UID/<label>`、system
+    ドメインは sudo で同様に bootout/disable。DriverKit 拡張(`org.pqrs.Karabiner-DriverKit-
+    VirtualHIDDevice`)は **SIP 有効だと `systemextensionsctl uninstall` が拒否され、再起動でも
+    消えない**。VirtualHIDDevice の pkg(GitHub releases)を入れ直して
+    `scripts/uninstall/deactivate_driver.sh`(sudo 無し)→ `remove_files.sh`(sudo)を実行すると
+    再起動不要で消える。`~/.config/karabiner/` は残る(害なし)。
   - ランチャー本体でこの変換をやるには CGEventTap(ctypes + CFRunLoop、約 200 行)が必要で、
     「入力監視」権限が **Python バイナリのパスに紐づく**ため brew python 更新で壊れる。採らない。
 
