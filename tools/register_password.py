@@ -72,6 +72,10 @@ def main() -> int:
     if not pw:
         print("入力が空です。中止しました。")
         return 1
+    problem = ur.password_problem(pw)
+    if problem:
+        print(f"❌ {problem}")
+        return 1
 
     print(f"入力を受け取りました({len(pw)} 文字)。{ssh_host} の PAM で検証します...")
     remote = f"/tmp/pamcheck-{uuid.uuid4().hex[:8]}.py"
@@ -85,9 +89,17 @@ def main() -> int:
         input=pw + "\n", capture_output=True, text=True)
 
     if "PAM_OK" in run.stdout:
-        ur.keychain_set_password(profile["id"], pw)
+        if not ur.keychain_set_password(profile["id"], pw):
+            print("❌ 検証は通りましたが Keychain への保存に失敗しました(app.log 参照)。")
+            return 1
         print(f"✅ 検証に成功したので Keychain に保存しました({name} / {user})。")
         return 0
+    if "PAM_NG" not in run.stdout:
+        # 検証スクリプト自体が動かなかった(ssh 切断・python3 なし等)。
+        # パスワード違いと混同させない
+        print(f"❌ {ssh_host} での検証を実行できませんでした(rc={run.returncode})。")
+        print("   " + (run.stderr.strip().splitlines() or ["(stderr なし)"])[-1])
+        return 1
     print(f"❌ このパスワードでは {user} の認証が通りません。保存していません。")
     print("   接続先のコンソールでロック解除に使う値を確認してください。")
     return 1

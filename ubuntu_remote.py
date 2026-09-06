@@ -40,6 +40,7 @@ LOG_MAX_BYTES = 5 * 1024 * 1024  # 起動時にこれを超えていたら app.l
 # 内蔵再接続に失敗したときと同じ汎用値(FreeRDP 3.27 のソースとログで確認)。
 # 131 はログの中断マーカーで区別する(Session._user_aborted_in_log)。
 USER_EXIT_CODES = {0, 1, 2, 11, 145}
+EXIT_LOGOFF = 2        # 別 PC に蹴られたときもこれ(ERRINFO_LOGOFF_BY_USER)。Session._detect_kicker
 EXIT_CONN_FAILED = 131
 
 # 実際の画面サイズは main() で tkinter から取得して上書きする
@@ -168,6 +169,20 @@ def keychain_delete_password(profile_id: str) -> None:
         capture_output=True, text=True)
 
 
+def password_problem(password: str) -> str | None:
+    """保存・受け渡しできないパスワードなら理由を返す(None = 問題なし)。
+
+    - 改行: /args-from:stdin は 1 行 = 1 引数なので渡せない
+    - タブなどの制御文字: `security -g` は空白類を含むパスワードを hex ではなく
+      引用形式で出し、制御文字を `\\011` のような 8 進エスケープにするため、
+      リテラルのバックスラッシュと区別できず往復が保証できない
+    ProfileDialog と tools/register_password.py の両方で使う。
+    """
+    if any(ord(c) < 0x20 or c == "\x7f" for c in password):
+        return "改行やタブなどの制御文字を含むパスワードは扱えません。"
+    return None
+
+
 # ---------------------------------------------------------------- 接続前チェック
 
 def _local_ipv4s() -> set[str]:
@@ -190,9 +205,14 @@ def other_rdp_clients(host: str, port: int) -> list[str] | None:
             ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", host,
              f"ss -Htn state established '( sport = :{port} )'"],
             capture_output=True, text=True, timeout=12)
-    except (subprocess.TimeoutExpired, OSError):
+    except (subprocess.TimeoutExpired, OSError) as e:
+        log(f"先客チェック不能(ガードなしで接続): {host}: {e}")
         return None
     if r.returncode != 0:
+        # 判定できなかったこと自体をログに残す。残さないと、後で蹴られたときに
+        # 「ガードが効いていたのか」をログから判断できない
+        detail = r.stderr.strip().splitlines()[-1:] or [f"rc={r.returncode}"]
+        log(f"先客チェック不能(ガードなしで接続): {host}: {detail[0]}")
         return None
     local = _local_ipv4s()
     peers: list[str] = []
@@ -269,6 +289,8 @@ class Session:
         self.state = "接続中"
         self.alive = True
         self.blocked_by: str | None = None  # 接続を中止させた先客の IP(UI 通知用)
+        self.kicked_by: str | None = None   # 接続後にこちらを蹴った別 PC の IP(UI 通知用)
+        self._has_password = False          # False なら SDL の認証ダイアログを待つ
         self._proc: subprocess.Popen | None = None
         self._stop_event = threading.Event()  # set = ユーザーによる「切断」
         self._log_offset = 0  # この接続の sdl-freerdp 出力が app.log のどこから始まるか
@@ -283,6 +305,7 @@ class Session:
 
     def _spawn(self) -> subprocess.Popen:
         password = keychain_get_password(self.profile["id"])
+        self._has_password = password is not None
         rdp_args = build_rdp_args(self.profile)
         if password is not None:
             # /from-stdin は SDL クライアントだと GUI ダイアログになりパイプから
@@ -298,13 +321,14 @@ class Session:
         # どのオプションで接続したかをログから確定できるようにする。パスワードは
         # /args-from:stdin 経由で rdp_args には含まれないため平文は残らない。
         log(f"  引数: {' '.join(rdp_args)}")
-        self._log_offset = os.path.getsize(LOG_PATH)  # ユーザー中断判定用(_user_aborted_in_log)
-        logf = open(LOG_PATH, "a", encoding="utf-8")
-        proc = subprocess.Popen(
-            argv,
-            stdin=subprocess.PIPE if payload is not None else subprocess.DEVNULL,
-            stdout=logf, stderr=logf, text=True)
-        logf.close()  # 子プロセス側に fd が複製済みなので親側は閉じてよい
+        self._log_offset = os.path.getsize(LOG_PATH)  # 切断理由の判定用(_log_tail)
+        # 子プロセス側に fd が複製されるので、Popen 後は親側のハンドルを閉じてよい
+        # (with にしておけば Popen が OSError で失敗したときも閉じ漏れない)
+        with open(LOG_PATH, "a", encoding="utf-8") as logf:
+            proc = subprocess.Popen(
+                argv,
+                stdin=subprocess.PIPE if payload is not None else subprocess.DEVNULL,
+                stdout=logf, stderr=logf, text=True)
         if payload is not None:
             try:
                 proc.stdin.write(payload)
@@ -335,14 +359,24 @@ class Session:
             '  set position of win to {0, 25}\n'
             f'  set size of win to {{{w}, {h - 25}}}'
         )
-        for _ in range(20):  # ウィンドウが出るまで最大 10 秒待つ
+        # パスワード未登録時は SDL の認証ダイアログにユーザーが入力し終わるまで
+        # セッションウィンドウが出ないので、待ち時間を長く取る
+        deadline = time.monotonic() + (10 if self._has_password else 120)
+        while time.monotonic() < deadline:
             if self._proc is None or self._proc.poll() is not None:
                 return
-            r = subprocess.run(["osascript", "-e", script], capture_output=True)
+            r = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
             if r.returncode == 0:
                 return
+            # -1743 = オートメーション(System Events への Apple Event 送信)未許可、
+            # -25211 = アクセシビリティ未許可。どちらも待っても解決しないので即座に諦め、
+            # ウィンドウ未出現(-1719)と区別して原因をログに残す
+            if "(-1743)" in r.stderr or "(-25211)" in r.stderr:
+                log("ウィンドウの拡大に失敗: システム設定 > プライバシーとセキュリティ で "
+                    f"Python にオートメーション/アクセシビリティを許可してください: {r.stderr.strip()}")
+                return
             time.sleep(0.5)
-        log(f"ウィンドウの拡大に失敗(権限未許可の可能性): {display_text(self.profile)}")
+        log(f"ウィンドウの拡大に失敗(ウィンドウが時間内に出なかった): {display_text(self.profile)}")
 
     def toggle_fullscreen(self) -> None:
         """セッションウィンドウの macOS ネイティブ全画面を切り替える(Windows 版の F11 相当)。
@@ -363,31 +397,53 @@ class Session:
         if r.returncode != 0:
             log(f"全画面切り替えに失敗: {r.stderr.strip() or f'rc={r.returncode}'}")
 
-    def _user_aborted_in_log(self) -> bool:
-        """この接続の sdl-freerdp 出力に「ユーザーによる中断」の痕跡があるか。
+    def _log_tail(self) -> str:
+        """この接続の sdl-freerdp 出力(app.log のこの接続以降の断片)。
 
-        ウィンドウを閉じても exit code はネットワーク断と同じ 131 (CONN_FAILED) に
-        なるため、区別はログ出力にしか現れない。app.log のこの接続以降の断片から
-        中断マーカーを探す(複数セッション同時接続時は他セッションの出力が混ざり
-        得るが、単一利用が前提の道具なので許容)。
+        切断理由の判別に使う。マーカーは切断時に出る = 末尾付近にあるので、
+        長時間セッションでログが肥大していても末尾 1 MiB だけ読めば足りる。
+        複数セッション同時接続時は他セッションの出力が混ざり得るが、
+        単一利用が前提の道具なので許容。
         """
         try:
             with open(LOG_PATH, "rb") as f:
-                # マーカーは切断時に出る = このセッション出力の末尾付近にあるので、
-                # 長時間セッションでログが肥大していても末尾 1 MiB だけ読めば足りる
                 size = f.seek(0, os.SEEK_END)
                 f.seek(max(self._log_offset, size - 1024 * 1024))
-                tail = f.read().decode("utf-8", errors="replace")
+                return f.read().decode("utf-8", errors="replace")
         except OSError:
-            return False
+            return ""
+
+    def _user_aborted_in_log(self) -> bool:
+        """ユーザーによる中断の痕跡があるか。
+
+        ウィンドウを閉じても exit code はネットワーク断と同じ 131 (CONN_FAILED) に
+        なるため、区別はログ出力にしか現れない。
+        """
+        tail = self._log_tail()
         return ("Connection aborted by user" in tail
                 or "ERRCONNECT_CONNECT_CANCELLED" in tail)
+
+    def _detect_kicker(self) -> None:
+        """exit=2 のとき、別 PC に蹴られたのかを判定して kicked_by に入れる。
+
+        xrdp は同一セッションへ新しい接続が来ると古い接続を蹴り、蹴られた側には
+        ERRINFO_LOGOFF_BY_USER (exit=2) が返る。リモートで自分がログアウトした場合と
+        exit code では区別できないので、切断直後に接続先の確立済み接続を見て
+        別 PC がいればそれを蹴った相手とみなす(2026-08-08 の Baldwin の件の再発検知)。
+        """
+        if "ERRINFO_LOGOFF_BY_USER" not in self._log_tail():
+            return
+        others = other_rdp_clients(self.profile["host"], self.profile["port"])
+        if others:
+            self.kicked_by = ", ".join(others)
+            log(f"別の PC に蹴られた可能性: {display_text(self.profile)} ({self.kicked_by})")
 
     def _run(self) -> None:
         retries = 0
         while True:
             # 先客チェック: 別の PC が接続中なら、こちらが接続すると相手を蹴って
             # 奪い合いになるだけなので中止する(初回・自動再接続とも)。
+            self.state = "先客確認中"  # ssh が遅いと数秒かかるので「接続中」と区別する
             others = other_rdp_clients(self.profile["host"], self.profile["port"])
             if self._stop_event.is_set():  # チェック中(ssh 最大数秒)の「切断」
                 self.state = "切断"
@@ -411,9 +467,11 @@ class Session:
             rc = self._proc.wait()
             uptime = time.monotonic() - started
             log(f"切断: {display_text(self.profile)} (exit={rc}, uptime={uptime:.0f}s)")
+            if rc == EXIT_LOGOFF and not self._stop_event.is_set():
+                self._detect_kicker()
             if (self._stop_event.is_set() or rc in USER_EXIT_CODES
                     or (rc == EXIT_CONN_FAILED and self._user_aborted_in_log())):
-                self.state = "切断"
+                self.state = "蹴られた" if self.kicked_by else "切断"
                 break
             if uptime >= STABLE_UPTIME:
                 retries = 0
@@ -470,8 +528,10 @@ class ProfileDialog(tk.Toplevel):
         for i, (label, key, hint) in enumerate(rows):
             ttk.Label(body, text=label).grid(row=i, column=0, sticky="e", padx=(0, 8), pady=2)
             show = "*" if key == "password" else ""
-            ttk.Entry(body, textvariable=self._vars[key], width=32, show=show)\
-                .grid(row=i, column=1, sticky="we", pady=2)
+            entry = ttk.Entry(body, textvariable=self._vars[key], width=32, show=show)
+            entry.grid(row=i, column=1, sticky="we", pady=2)
+            if i == 0:
+                entry.focus_set()  # 開いた直後から入力できるようにする
             if hint:
                 ttk.Label(body, text=hint, foreground="gray").grid(row=i, column=2, sticky="w", padx=(6, 0))
 
@@ -521,11 +581,9 @@ class ProfileDialog(tk.Toplevel):
         }
         entered = self._vars["password"].get()
         if entered:
-            # /args-from:stdin は 1 行 = 1 引数のため、改行入りパスワードは渡せない
-            if "\n" in entered or "\r" in entered:
-                messagebox.showwarning(
-                    "使用できないパスワード",
-                    "改行を含むパスワードは扱えません。", parent=self)
+            problem = password_problem(entered)
+            if problem:
+                messagebox.showwarning("使用できないパスワード", problem, parent=self)
                 return
             self.password = entered
         self.destroy()
@@ -560,7 +618,7 @@ class MainWindow:
         self.tree.column("target", width=220)
         self.tree.column("state", width=120)
         self.tree.pack(fill="both", expand=True, padx=8, pady=8)
-        self.tree.bind("<Double-1>", lambda _e: self.connect())
+        self.tree.bind("<Double-1>", self._on_double_click)
 
         self.refresh_tree()
         self.root.after(500, self._poll_sessions)
@@ -600,7 +658,22 @@ class MainWindow:
                     "接続すると相手を切断してしまいます(xrdp は同一セッションの新しい接続が"
                     "古い接続を蹴ります)。\n"
                     "相手側の RDP クライアントを終了してから接続し直してください。")
+            if not session.alive and session.kicked_by:
+                kicked, session.kicked_by = session.kicked_by, None
+                messagebox.showwarning(
+                    "別の PC に切断されました",
+                    f"{display_text(session.profile)} のセッションに別の PC ({kicked}) が接続し、"
+                    "こちらの接続が切断されました。\n"
+                    "このまま接続し直すと今度は相手を蹴る奪い合いになるため、自動再接続は"
+                    "していません。\n"
+                    "相手側の RDP クライアントを終了してから接続し直してください。")
         self.root.after(500, self._poll_sessions)
+
+    def _on_double_click(self, event: tk.Event) -> None:
+        # 見出し行や列境界のダブルクリック(列幅調整など)で接続が走らないようにする
+        # (#0 列は "tree"、他の列は "cell" と報告される)
+        if self.tree.identify_region(event.x, event.y) in ("tree", "cell"):
+            self.connect()
 
     def selected_id(self) -> str | None:
         selection = self.tree.selection()
