@@ -304,7 +304,8 @@ layout=jp)では keycode 121/122 に keysym が無い。そのため FreeRDP 側
 | 英数 | 0x71 | 0x7B | 131 | `Muhenkan` |
 
 手順:
-1. `brew upgrade freerdp`(3.31.1 以上)
+1. `brew upgrade freerdp`(3.31.1 以上)。**ただし 3.31.0 / 3.31.1 は xrdp 相手に黒画面になる**
+   (後述「FreeRDP 3.31.x の黒画面」)。#13351 を含む次のリリースを待つか、自前ビルドで行う
 2. `build_rdp_args` に `"/kbd:remap:0x72=0x79,remap:0x71=0x7b"` を追加
    (SDL3 クライアントは `freerdp_keyboard_remap_key` を通すので remap が効く)
 3. 接続先ごとに `gsettings set org.gnome.desktop.wm.keybindings switch-input-source
@@ -355,6 +356,39 @@ layout=jp)では keycode 121/122 に keysym が無い。そのため FreeRDP 側
   Karabiner + trustd + backgroundtaskmanagementd で CPU 約 1.5%。
   同日の Mac フリーズ(プロセス生成の暴走)の発生源ではなかった(暴走中もこのループは 3 秒間隔のまま)が、
   用途がこのプロジェクトの かな/英数 変換だけだったので撤去した。
+
+### FreeRDP 3.31.x の黒画面(xrdp 側のバグ、2026-09-06 に上流へ報告済み)
+
+FreeRDP 3.31.0 / 3.31.1 の sdl-freerdp で xrdp 0.10.6 に繋ぐと、接続・ログイン・フレーム受信は
+正常(ログにエラー無し、`RDPGFX_CODECID_PLANAR` が大量に届く)なのに**ウィンドウが真っ黒**になる。
+`/smart-sizing` 無し・`SDL_RENDER_DRIVER=software`・`-gfx` いずれも黒。**このマシンの brew
+freerdp は 3.30.0 のままなので発症しない**。`brew upgrade freerdp` で 3.31.x に上げると踏む。
+
+- **報告**: [FreeRDP/FreeRDP#13348](https://github.com/FreeRDP/FreeRDP/issues/13348)
+  (smoltz29j 名義、別 Mac で bisect。3.27.1 / 3.30.0 OK、3.31.1 黒、`gfx.c` の
+  `GFX_PIXEL_FORMAT_XRGB_8888` → `PIXEL_FORMAT_BGRA32` 化(#13280、RemoteApp の影対応)の
+  1 行を戻すと直ることまで特定して提出)。
+- **メンテナ(akallabeth)の結論: xrdp のバグ**。xrdp の PLANAR コーデックはヘッダに
+  `PLANAR_FORMAT_HEADER_NA`(alpha 無し)を立てずに alpha データを送り、その値が 0。以前の
+  FreeRDP は GFX サーフェスの alpha を無視していたが、Windows 11 が ALPHA コーデックで
+  透明度を載せるようになり無視できなくなった、という経緯。
+- **xrdp 側**: [neutrinolabs/xrdp#3869](https://github.com/neutrinolabs/xrdp/issues/3869)
+  (akallabeth が転送、2026-09-06、未修正)。修正案は `xrdp/xrdp_mm.c`
+  `xrdp_mm_egfx_send_planar_bitmap` の `libxrdp_planar_compress(..., 0x10)` の flags を
+  `0x30` にする(= NA フラグを立てて alpha を送らない)。elwhite / glavine の 0.10.6 を
+  自前パッチする選択肢もあるが、FreeRDP 側の回避が入るので**サーバーは触らない**。
+- **FreeRDP 側の回避**: [PR #13351](https://github.com/FreeRDP/FreeRDP/pull/13351)
+  (commit 9091f66c3「[gfx] map GFX_PIXEL_FORMAT_XRGB_8888」、2026-09-07 マージ、
+  milestone next-3.0)。RAIL(RemoteApp)時だけ BGRA32、それ以外は BGRX32 に戻す。
+  **3.31.1 には未収録**。3.31.2 以降か 3.32.0 で入る見込みなので、brew で上げるときは
+  リリースノートにこの PR が含まれるか確認してから。
+- **自前ビルドで急ぐ場合**(別 Mac で bisect に使った構成): 3.31.1 tarball に上記 1 行 revert
+  (または master の 9091f66c3 を cherry-pick)。`cmake -G Ninja -DCMAKE_BUILD_TYPE=Release
+  -DCMAKE_PREFIX_PATH=/opt/homebrew -DBUILD_SHARED_LIBS=ON -DWITH_X11=OFF
+  -DWITH_CLIENT_SDL3=ON -DWITH_FFMPEG=ON -DWITH_GFX_H264=ON -DWITH_SWSCALE=ON
+  -DCHANNEL_RDPEWA=ON`。
+- **「セッション開始直後に黒画面」(xrdp-kick)とは別物**。あちらは数秒後に描画が始まるか
+  xmessage で叩けば直る。こちらはいつまでも黒く、クライアントのバージョンで決まる。
 
 ### キー到達を実測する手順(この種の調査の定石)
 
