@@ -657,7 +657,6 @@ sudo ethtool -s enp9s0 wol g   # verify: sudo ethtool enp9s0 | grep -i wake → 
 
 From the Mac, wake with `python3 tools/wake.py <name>`. Note the MAC via `ip link` at
 install time and add a line to `HOSTS` in `tools/wake.py` (glavine is registered).
-- To get audio, install `pipewire-module-xrdp` on the server
 
 ## Config files and logs
 

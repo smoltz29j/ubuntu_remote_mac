@@ -19,8 +19,8 @@ RDP のセッションウィンドウで手入力すると JIS/ABC 配列ずれ�
 from __future__ import annotations
 
 import getpass
-import json
 import os
+import shlex
 import subprocess
 import sys
 import uuid
@@ -50,8 +50,9 @@ print("PAM_OK" if os.waitstatus_to_exitcode(status) == 0 else "PAM_NG")
 
 
 def main() -> int:
+    # profiles.json が無い・壊れている場合もトレースバックでなく空一覧/未検出で返す
+    profiles = ur.load_profiles()
     if len(sys.argv) < 2:
-        profiles = json.load(open(ur.PROFILES_PATH, encoding="utf-8"))
         print(__doc__)
         print("登録済みプロファイル:")
         for p in profiles:
@@ -59,7 +60,6 @@ def main() -> int:
         return 1
 
     name = sys.argv[1]
-    profiles = json.load(open(ur.PROFILES_PATH, encoding="utf-8"))
     matches = [p for p in profiles if p["name"] == name]
     if not matches:
         print(f"プロファイル '{name}' が見つかりません。")
@@ -84,8 +84,9 @@ def main() -> int:
     if up.returncode != 0:
         print(f"❌ {ssh_host} に ssh できません(鍵認証が必要)。")
         return 1
+    # ユーザー名はリモートのシェルを経由するので必ずクォートする(空白や記号を含む値の対策)
     run = subprocess.run(
-        ssh + [f"python3 {remote} {user}; rm -f {remote}"],
+        ssh + [f"python3 {remote} {shlex.quote(user)}; rm -f {remote}"],
         input=pw + "\n", capture_output=True, text=True)
 
     if "PAM_OK" in run.stdout:

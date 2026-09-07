@@ -100,6 +100,10 @@ def load_profiles() -> list[dict]:
     except (json.JSONDecodeError, OSError) as e:
         log(f"profiles.json の読み込みに失敗: {e}")
         return []
+    if not isinstance(raw, list) or not all(isinstance(p, dict) for p in raw):
+        # 手編集で壊れた JSON(トップレベルが配列でない等)で起動時に落ちないようにする
+        log("profiles.json の形式が不正(プロファイルの配列ではない)のため無視します")
+        return []
     # 将来フィールドを増やしたとき古い JSON でも欠損キーで落ちないよう既定値に重ねる
     return [{**default_profile(), **p} for p in raw]
 
@@ -214,7 +218,12 @@ def other_rdp_clients(host: str, port: int) -> list[str] | None:
         detail = r.stderr.strip().splitlines()[-1:] or [f"rc={r.returncode}"]
         log(f"先客チェック不能(ガードなしで接続): {host}: {detail[0]}")
         return None
-    local = _local_ipv4s()
+    try:
+        local = _local_ipv4s()
+    except OSError as e:
+        # ローカル IP が取れないと自分の接続を先客と誤認して接続を止めてしまうので判定不能扱い
+        log(f"先客チェック不能(ガードなしで接続): ローカル IP を取得できません: {e}")
+        return None
     peers: list[str] = []
     for line in r.stdout.splitlines():
         parts = line.split()  # Recv-Q Send-Q Local:Port Peer:Port
@@ -253,9 +262,10 @@ def build_rdp_args(profile: dict) -> list[str]:
         # 日本語入力はリモートの ibus-mozc に行わせる(Mac 側 IME を使う
         # /kbd:unicode は SDL クライアントのセッションウィンドウでは機能しなかった)。
         # 無指定だと macOS の入力ソース(ABC)から US 配列として申告され記号配置がずれるので、
-        # 日本語配列を明示する。なお IME の切り替えは かな/英数 キーでは不可能
-        # (macOS が IME 層より手前で消費し RDP に一切流れない)。Ctrl+Shift+; を
-        # Karabiner で合成して送る構成。詳細は CLAUDE.md「日本語入力」参照。
+        # 日本語配列を明示する。なお IME の切り替えは かな/英数 キーでは不可
+        # (FreeRDP 3.30 以前の SDL クライアントが捨てる。3.31.1 で対応、remap 案は
+        # CLAUDE.md「かな/英数 を通す計画」)。現状は Ctrl+Shift+; を直接押す運用
+        # (Karabiner は 2026-09-03 に撤去)。詳細は CLAUDE.md「日本語入力」参照。
         "/kbd:layout:0x00000411",
         "+auto-reconnect",
         f"/auto-reconnect-max-retries:{RETRY_MAX}",
@@ -333,9 +343,15 @@ class Session:
             try:
                 proc.stdin.write(payload)
                 proc.stdin.flush()
-                proc.stdin.close()
             except BrokenPipeError:
                 pass  # 起動即失敗時。終了コード側で拾う
+            finally:
+                # flush で失敗しても必ず閉じる(閉じ漏れると親側のパイプ fd が残り、
+                # GC 時の再 flush で "Exception ignored" が stderr に出る)
+                try:
+                    proc.stdin.close()
+                except BrokenPipeError:
+                    pass
         return proc
 
     def _window_script(self, body: str) -> str:
@@ -439,6 +455,18 @@ class Session:
             log(f"別の PC に蹴られた可能性: {display_text(self.profile)} ({self.kicked_by})")
 
     def _run(self) -> None:
+        # 監視スレッドが予期しない例外で黙って死ぬと alive が True のまま残り、UI 上は
+        # 永遠に「接続中」でそのプロファイルに再接続できなくなる。必ず終了状態にする
+        # (sdl-freerdp 自体は殺さない — ランチャー側の都合でセッションを落とさない方針)。
+        try:
+            self._run_loop()
+        except Exception as e:
+            log(f"セッション監視で予期しないエラー: {display_text(self.profile)}: {e!r}")
+            self.state = "監視エラー"
+        finally:
+            self.alive = False
+
+    def _run_loop(self) -> None:
         retries = 0
         while True:
             # 先客チェック: 別の PC が接続中なら、こちらが接続すると相手を蹴って
@@ -485,7 +513,6 @@ class Session:
             if self._stop_event.wait(RETRY_INTERVAL):  # 待機中の「切断」で即終了
                 self.state = "切断"
                 break
-        self.alive = False
 
 
 # ---------------------------------------------------------------- 編集ダイアログ

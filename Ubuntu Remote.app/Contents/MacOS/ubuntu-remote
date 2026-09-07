@@ -7,5 +7,7 @@
 # 自己申告するためで、exec 連鎖でもバンドル内 symlink 経由でも上書きされる(実測済み)。
 # 直すには pyobjc かコンパイル済みスタブが要るので、方針(標準ライブラリのみ)を優先して
 # 受け入れる。ウィンドウタイトルは Ubuntu Remote で、機能面の影響はない。
-REPO="$(cd "$(dirname "$0")/../../.." && pwd)"
+# cd -P: /Applications のシンボリックリンク経由で $0 が渡された場合に、論理パスで
+# ../../.. を畳むと /Applications を指してしまうため、実体パスで辿る
+REPO="$(cd -P "$(dirname "$0")/../../.." && pwd -P)"
 exec /bin/bash "$REPO/run.sh"
